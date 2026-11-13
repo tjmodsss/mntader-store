@@ -141,9 +141,10 @@ point's icon, `author` (a string or `author.name`) and
 `store.description` over `description`. An installed app's `icon` is its
 installed package's entry-point icon (`rhmiData/resources/`, read through
 no link), copied into `state/icons/` and read again only when the package
-changes. The row of the installed app has its source's icon fetched only
-once its installed package has none; the other sources' rows of that id
-show their own. Once a check has read every source, the icons of each
+changes. The row of the installed app shows that icon, else its source's;
+the other sources' rows of that id show their own. Every source icon is
+fetched, an installed app's too, so a removed app shows its source's icon
+at once. Once a check has read every source, the icons of each
 source read without error are looked at again.
 
 **Channels** (a `github` source's `channel`): `releases` (the catalog
@@ -213,9 +214,22 @@ commit). Without one: `releases` when the repo has a release, else
   `uninstallable` come from the entry, else from the component's own file. A component that
   cannot be used is left out and the source's `error` says why; the rest
   are listed.
-- GitHub: the files are read at the commit through the contents API, and
-  an install downloads the repo tarball at that commit (`/tarball/<sha>`,
-  at most `repo_max_bytes`; links in it are left out). A folder is read in
+- GitHub: the files are read at the commit through the contents API. An
+  install from a public repo reads the commit's tree (one API request) and
+  downloads only the files the component is made of (its folder, or a
+  service or preload tool's one file; for a build script, also its
+  `build.shared` paths and the script) from
+  `raw.githubusercontent.com`, gzipped on the way, each checked against its
+  git id; a build that fails with only those runs again with the whole
+  repo. One download process fetches them, six at a time, the largest
+  first, over connections it keeps open, and the progress counts each
+  file's share of their total size as its bytes come. A build without
+  `build.shared`, a private repo, or a tree or file that cannot be read
+  downloads the repo tarball at the commit
+  (`/tarball/<sha>`, at most `repo_max_bytes`; links in it are left out).
+  While queued installs run, the tree, the files (by git id, up to 64 MB)
+  and the last tarball are kept for the next ones, so an Update all reads
+  each once; they are dropped when the queue is empty. A folder is read in
   place.
 - On a branch, a commit of the same version is an update too when it
   changes the component: a row's `revision` is the short commit it would
@@ -342,9 +356,8 @@ lists the id.
   source lists (a tool, an app the deploy tool marked local, one with an
   origin, imported) has such a row, for its Remove: an app removable, a
   tool when its `component.json` says `uninstallable: true`, never one the
-  updater never removes (itself, the deploy tool, the Store, what the
-  updater requires); a tool's requirements and capability are its
-  `component.json`'s.
+  updater never removes (below); a tool's requirements and capability are
+  its `component.json`'s.
 
 `requires` (`{"<id>":
 "<min version>"}`) installs a missing or older requirement first, from the
@@ -358,8 +371,14 @@ component requiring the renderer installs beside another renderer);
 installed; apps, whatever their source's `uninstallable` says, and
 `uninstallable` tools can be removed (Store, phone page), through
 `mgu-deploy.sh uninstall <id> --yes`, unless something installed requires
-them. The updater, the deploy tool, the Store and what the updater
-requires are never removed (their `uninstallable` is false). An install asked
+them: what its row lists, or what it required when it was installed
+(`state/origins.json` `requires`, also recorded when its source lists the
+version installed), which stands while no source lists it (its stick out,
+its source removed). The Store and the tools its setup installs (the updater, the deploy
+tool, `mgu-python`, `app-privacy`, `mgu-render`, `mgu-uplink`) are never
+removed, whatever a source says, nor taken along by an app's removal
+(their `uninstallable` is false); the computer's uninstall
+(deploy/README.md) removes them. An install asked
 for while a removal of the same component waits or runs (or the other way
 round) is refused.
 
@@ -525,8 +544,9 @@ first change to the sources, writes it.
   `/var/opt/<id>/current/component.json`. Only components a source lists
   are looked at.
 - **Installing.** On request, one at a time (later requests queue; the
-  Store's own install waits for all the others, the updater's own update
-  included, since it closes the Store); on its own only to set up again
+  deploy tool's own update goes first, since every other install goes
+  through it; the Store's own install waits for all the others, the
+  updater's own update included, since it closes the Store); on its own only to set up again
   what does not work (`repair`, "The socket") and to put back a lost app
   (below): an app install restarts every running OAP app, which must not
   happen unasked. The service runs at `Nice=10`, below the HMI. The
@@ -586,12 +606,17 @@ fetcher can change nothing it installs.
   as it is then, so a download carries on over a network joined meanwhile.
 - A download whose connection breaks (cut mid-transfer, reset, one of those
   waits over, no connection) or that gets a 500, 502, 503 or 504 is tried again
-  after 1, 2, 4 and 8 s, up to 4 times in a row without getting further, 200
-  tries in all. Where the server takes byte ranges with a strong ETag
-  (GitHub's release downloads do; `codeload.github.com` does not), the next
-  try asks for the rest (`Range`, `If-Range`) and adds it to what came;
-  otherwise the file starts over. The size and sha256 are checked on the
-  whole file. A POST, a refused certificate, an unknown host name and other
+  after 1, 2, 4 and 8 s, up to 4 times in a row without getting further; a
+  try that gets further starts that count over, so a slow, flaky link
+  carries on as long as the file grows. Where the server takes byte ranges
+  (GitHub's release downloads and `raw.githubusercontent.com` do;
+  `codeload.github.com` does not), the next try asks for the rest (`Range`,
+  with the strong ETag or Last-Modified in `If-Range`; a file of a commit
+  goes on without either) and adds it to what came; otherwise the file
+  starts over, a try that counts as not getting further. The size and
+  sha256 (a repo file's git id) are checked on the whole file; one pieced
+  together from several tries that does not match is downloaded once more
+  from the start. A POST, a refused certificate, an unknown host name and other
   HTTP answers are not tried again.
 
 ### Through a proxy
@@ -726,6 +751,10 @@ the user out. `systemctl reboot` is not used: it is systemd's stock reboot,
 which no BMW unit hooks, and it stops the services by their `KillSignal`
 (SIGABRT for many of BMW's, the NSM daemon's included).
 
+- Before the command runs, the start's boot id goes into the deploy tool's
+  `/var/opt/mgu-deploy/restart-requested` (when that folder is there), so
+  the deploy tool's safe mode never counts the restart as a failed start
+  (deploy/README.md, "Safe mode").
 - Refused (`an install is running`) while an install runs or waits, so a
   restart never cuts one short. Once the restart is under way, installs
   are refused (`the head unit is restarting`), and a second reboot request
@@ -806,11 +835,13 @@ on and off (privileged `web` op) and shows its QR code.
   fields; the daemon checks their values.
   Logs: `log_file` (and `.1`) read directly, the last 64 KiB, only while it
   is the daemon's own regular file; the journals of `mgu-updater`,
-  `mgu-uplink` and `mgu-app-fallback` (the deploy tool's unit; its own
-  runs log as `deploy:` lines in `log_file`) through the privileged `logs`
+  `mgu-uplink`, `mgu-app-fallback` (the deploy tool's unit; its own
+  runs log as `deploy:` lines in `log_file`), the Renderer's `mgu-render`
+  and `mgu-render-hmi`, and `mgu-deploy-verify` (the deploy tool's check
+  after a restart) through the privileged `logs`
   op, since the journal is not readable to the web uid:
   `{"op":"logs","unit","lines","secret"}` → `{"type":"logs","unit","text"}`
-  (`journalctl -u <unit> -n <lines> --no-pager`, those three units only,
+  (`journalctl -u <unit> -n <lines> --no-pager`, those units only,
   1–1000 lines). Requests carry `rid`; the daemon's direct reply to one
   (state, error or logs) carries it back.
 
@@ -877,7 +908,7 @@ each request, and whenever it changes (at most every 250 ms):
     "wifi": { "enabled": true, "link": "online", "ssid": "Phone", "ip": "172.20.10.2", "signal": -45, "networks": [ … ],
       "saved": [ "Phone" ], "scanning": false, "error": null } },
   "busy": { "id": "doom", "phase": "download", "progress": 524288, "total": 2080457 },
-  "rebooting": false, "rebootError": null,
+  "rebooting": false, "rebootError": null, "safeMode": null,
   "components": [ { "id": "doom", "kind": "app", "title": "DOOM", "version": "1.0.1",
     "installed": "1.0.0", "size": 2080457, "status": "update", "source": "idrive7-apps",
     "build": null, "optional": false, "uninstallable": true, "revision": null,
@@ -994,6 +1025,14 @@ each request, and whenever it changes (at most every 250 ms):
   not yet restarted onto it), `unpatched`, `mismatch`, `unknown` (the tool
   gave no answer), or `null` without the tool. `rebooting` and
   `rebootError`: "Restarting the head unit".
+- `safeMode` is the deploy tool's safe mode (`status --json` `safe_mode`,
+  deploy/README.md, "Safe mode"): `{ "at", "reason" }` while our tools'
+  units stay off, else null (also with a deploy tool that does not report
+  it). An install asked for (the Store, the phone page) that goes through
+  leaves it; the updater's own repairs (a lost app installed again from its
+  kept package, a stale tool laid again, updated or installed again from its
+  source, the requirements those install, and the rollback of a Store such a
+  repair updated that did not start) keep it (`--keep-safe-mode`).
 
 Requests: `{"op":"status"}`, `{"op":"check"}`, `{"op":"install","id"}`
 (with its missing requirements first), from any app.
@@ -1004,6 +1043,7 @@ Store says it at each connection (below, "The Store's update").
 | Request | Does |
 |---|---|
 | `{"op":"reboot"}` | restarts the head unit ("Restarting the head unit"): at once with the secret; without it while a Store older than 0.9.16 is installed, within the restart limits |
+| `{"op":"safe-mode-off"}` | Leave safe mode: the deploy tool's `safe-mode off --yes`, then its state again; refused while an install runs or waits, nothing while not in safe mode. The tools start at the next start of the head unit (`pendingReboot` on the deploy tool's row) |
 | `{"op":"uninstall","id","tools"?}` | removes an `uninstallable` component (every app but the Store); then each of `tools`, which must be among the app row's `requiredAlone` (else nothing is queued), a tool before those it requires. A tool whose turn comes while something installed still requires it (the app's removal failed) stays; an app whose removal waits for the next start (iDrive 8) requires none |
 | `{"op":"setup","id"}` | Set up: a tool whose row has `needsSetup` laid again by the deploy tool from its kept copy with its install step (`mgu-deploy.sh setup <id> --yes`) |
 | `{"op":"rollback","id"}` | Undo update: a component whose row has `previous` back to that version, through `mgu-deploy.sh rollback <id> --yes` |
@@ -1098,7 +1138,8 @@ js/client.js             socket client (Store app, command line)
 js/web.js                the phone page
 updater.conf             defaults
 systemd/mgu-updater.service
-component.json           the tool component (deploy tool format)
+component.json           the tool component (deploy tool format); its unit runs in the deploy tool's safe mode
+                         ("runsInSafeMode"), so installs and Leave safe mode work there
 test/                    offline tests (test/run.sh: Node 8.16.2 in Docker; MGU_TEST_NODE_VERSION=8.9.4 for the 2019 MGU's)
 ```
 
@@ -1170,9 +1211,6 @@ files), with
   doom2, with its download), its update landing on doom2, a package built
   elsewhere blocked, a build that comes out under the old id refused, a
   source package made over and installed as `shared2`, the removal;
-  `test/test_rename_real.js <idrive7-apps clone> [<app>...]` builds its apps
-  under another id with the repo's own `build.py` on the machine's python3
-  (`run.sh` runs it when `IDRIVE7_APPS` names a clone);
 - the head unit and compatibility: the unit from the deploy tool, an
   iDrive 8 app refused on iDrive 7 (and not on iDrive 8); an App Manager
   index (packages kept by sha256, one that does not match left out, a kept

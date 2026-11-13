@@ -34,7 +34,9 @@ USB, Settings) beside:
   42 %`, `Waiting`, `Not for this head unit`, `Failed`, `Restart pending`, `Not working`,
   version and size) and a badge or progress ring. While a listed app or tool waits
   for a restart, **Restart now** sits left of the filters: Settings' confirm
-  step, whose Restart is off while an install runs or waits. A component for another
+  step, whose Restart is off while an install runs or waits. In the deploy
+  tool's safe mode, while nothing installs, **Leave safe mode** takes that
+  place. A component for another
   head unit only (the updater's `compat: "no"`) is listed only while
   installed, so it can be removed (on the widget screens too). A version
   not for this head unit is not counted as an update.
@@ -73,13 +75,16 @@ leaves it. Each host state's focusable buttons stand for what the page has
 to press, in focus order: the controller moves the HMI's focus over them
 and the drawn page shows it as a ring; a press presses it. In embed mode,
 until the HMI reports a press on one of the page template's buttons (some
-HMIs route them neither focus nor presses), the dial and push come from
-FrontCCU (`statusRotaryEncoderState`, the manifest's proxy) while the page
-has the HMI's focus, and move the ring themselves. A page's focus
+HMIs route them neither focus nor presses), the dial, the tilts right and
+down, and the push come from FrontCCU (`statusRotaryEncoderState`, the
+manifest's proxy) while the page has the HMI's focus, and move the ring
+themselves; the HMI takes the tilts up (its header menu) and left (BACK). A page's focus
 starts on what it is for, a tab's on the side menu. Touch in the box goes
 to the drawn items; a drag scrolls a grid or list. With the HMI's
-controller gate loaded (the renderer's `controller`), the dial and push
-come straight from the renderer instead.
+controller gate loaded (the renderer's `controller`), the dial, every tilt
+and the push come straight from the renderer instead. A tilt moves the ring
+to the nearest item that way (across the grid, along the tabs, to a row's
+button); left with nothing there closes the page, as BACK does.
 
 The screens are drawn at most 30 times a second (the renderer's frame
 cap) into the renderer's box: embed (inside the page, iDrive 7 once the
@@ -195,7 +200,11 @@ app's tile is hidden after an install that restarted the app manager
 (`tileHidden`); `Restart the head
 unit to finish setup` while the updater has not run since the Store was
 installed, which after the first install is until the next start; `Updater
-not running` once it has), a **Check for updates** button, a progress bar for the running
+not running` once it has; `Safe mode` while the deploy tool's safe mode
+keeps our tools off, the updater's `safeMode`), **Leave safe mode** in safe
+mode (the start screen opens with the focus on it; hidden while an install runs; it asks
+the updater to leave it, and the tools start at the next start of the head
+unit), a **Check for updates** button, a progress bar for the running
 install (hidden when none runs), the rows **Apps** and **Head-unit tools**,
 each showing its running install, `Failed` or its number of updates,
 **Sources** (`Sign in` or `Error` when a source needs it), **Phone access**
@@ -424,6 +433,7 @@ tools/test_qr.js           the QR pictures (decoded back with zbarimg when insta
 tools/test_speller.js      src/speller.js against a fake use case factory
 tools/test_screens.js      every drawn screen in iDrive 7's and 8's boxes: in the box, values, presses, focus order, scrolling, touch
 tools/test_store.js        src/store.js's flows against stand-in SDK, RHMI, updater, speller and renderer
+tools/test_tilt.js         where a tilt of the controller moves the focus on the grid, side menu, tabs and lists
 tools/test_i18n.js         every language: its words, placeholders, RHMI text files, fonts, catalog texts
 tools/test_fit.js          every language's words on every drawn screen: nothing cut where the English fits
 tools/shots.js             screenshots of the drawn screens through mgu-render --replay (STORE_LANGUAGE: in that language)
@@ -440,7 +450,7 @@ node tools/build.js                                # robertn_store@<version>.src
 node tools/build.js --sdk <donor .tgz|.js>         # and robertn_store@<version>.tgz (MGU_SDK_DONOR)
 node tools/test_view.js && node tools/test_rhmi.js && node tools/test_qr.js && node tools/test_speller.js &&
     node tools/test_screens.js && node tools/test_store.js && STORE_HMI=ID8 node tools/test_store.js &&
-    node tools/test_i18n.js
+    node tools/test_tilt.js && node tools/test_i18n.js
 (cd ../../native/mgu-render && make test) && node tools/test_drag.js && node tools/shots.js <out dir>     # screenshots
 ```
 

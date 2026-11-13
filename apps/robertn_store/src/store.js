@@ -28,7 +28,8 @@
  * Allow 5 GHz, Use Wi-Fi and Scan; the group tried first and Phone over USB; the widget screens
  * have none of it.
  *
- * The start screen has the status line, Check for updates, the progress of
+ * The start screen has the status line, Leave safe mode while the deploy
+ * tool's safe mode keeps our tools off ("safe-mode-off"), Check for updates, the progress of
  * the running install, the rows Apps and Head-unit tools, which open their
  * lists, Sources and Phone access (shown when the updater reports them),
  * and Restart head unit, which opens its confirm step (Cancel, Restart). A
@@ -74,7 +75,7 @@ const { Drawn, DEPTHS } = require('./store_drawn.js');
 const { typeKey, wifiOf, proxyOf } = require('./store_ui.js');
 const { PHASE, percent, rowState, rowAction, groupState, statusLine, sourceLabel, sourceState,
     sourcesState, sourceActions, sourceChannel, sourceAccount, tokenLabel, tokenState, tokenSources, accountsState,
-    loginStatus, loginCode, phoneState, phoneAddress, parseSource, pickOptions, probeStatus, sourcesMessage, tokenMessage,
+    loginStatus, loginCode, phoneState, phoneAddress, parseSource, pickOptions, probeStatus, neededBy, sourcesMessage, tokenMessage,
     removable, requiredAlone, undoable, withSources, listed, localized, proxyUrlError, setClusterTime } = require('./store_view.js');
 
 const logger = logging.getSDKLogger();
@@ -141,7 +142,7 @@ const LISTS = {
     tool: { state: 'ST_OnlineApps_StoreTools', nav: 'storeNavTools', list: 'storeToolList' }
 };
 const KINDS = Object.keys(LISTS);
-const C = { status: 'storeStatus', check: 'storeCheck', progress: 'storeProgress', restart: 'storeRestart',
+const C = { status: 'storeStatus', safeModeOff: 'storeSafeModeOff', check: 'storeCheck', progress: 'storeProgress', restart: 'storeRestart',
     navSources: 'storeNavSources', navPhone: 'storeNavPhone',
     restartCancel: 'storeRestartCancel', restartConfirm: 'storeRestartConfirm',
     sourcesStatus: 'storeSourcesStatus', sourceList: 'storeSourceList', sourceAdd: 'storeSourceAdd',
@@ -241,6 +242,7 @@ class Store extends OnlineApp {
         this._typing = null;            // the drawn keyboard's page up: { page, resolve, under (the page it took the place of) }
         this._uplinkNote = null;        // the refusal of the last Wi-Fi or preferred-connection request
         this._proxyNote = null;         // why the last proxy change was refused
+        this._removeNote = null;        // the updater's refusal of the last Remove: { id, error, by }
         this._qr = { login: { key: null, file: null, chain: Promise.resolve() },
             phone: { key: null, file: null, chain: Promise.resolve() }, app: { key: null, file: null, chain: Promise.resolve() } };
         this._hmi = 'ID7';
@@ -312,6 +314,11 @@ class Store extends OnlineApp {
                 this._probed({ type: 'probe', repo: this._pick.repo, status: 'refused', error: String(msg) });
             } else if (UPLINK_OPS.indexOf(forOp) >= 0) {
                 this._uplinkNote = String(msg);
+                this._render();
+            } else if (forOp === 'uninstall') {
+                // the component that needs it, by the untranslated title the updater names it with
+                const by = (this._stRaw && this._stRaw.components || []).find((c) => c.title === neededBy(msg));
+                this._removeNote = { id: this._removeId, error: String(msg), by: by ? by.id : null };
                 this._render();
             } else if (forOp === 'proxy-set') {
                 this._proxyNote = String(msg);
@@ -525,6 +532,7 @@ class Store extends OnlineApp {
         });
         removeStaleQr();
         this._bind(C.check, () => this._send({ op: 'check' }));
+        this._bind(C.safeModeOff, () => this._privileged({ op: 'safe-mode-off' }));
         this._bind(C.restart, () => this._openState(S.restart));
         this._bind(C.restartCancel, () => this._closeState(S.restart));
         this._bind(C.restartConfirm, () => this._restart());
@@ -685,7 +693,7 @@ class Store extends OnlineApp {
             version: this._version(), note: this._sourcesNote, login: this._login,
             webText: web && web.enabled ? readFile(WEB_URL_FILE) : '', accountsNote: this._accountsNote,
             pick: this._pick && { repo: this._pick.repo, probe: this._pick.probe, tokenNote: !!this._pick.tokenNote },
-            uplinkNote: this._uplinkNote, proxyNote: this._proxyNote, language: i18n.language() };
+            uplinkNote: this._uplinkNote, proxyNote: this._proxyNote, removeNote: this._removeNote, language: i18n.language() };
     }
 
     /* A press on the drawn screens (src/store_ui.js acts). */
@@ -703,8 +711,11 @@ class Store extends OnlineApp {
                 this._removalRefused = false;
             } else if (act.page.name === 'confirm' && act.page.kind === 'account-remove') {
                 this._tokenId = act.page.id;
+            } else if (act.page.name === 'app') {
+                this._removeNote = null;
             } else if (act.page.name === 'confirm' && act.page.kind === 'remove') {
                 this._removeId = act.page.id;
+                this._removeNote = null;
             } else if (act.page.name === 'confirm' && act.page.kind === 'undo') {
                 this._undoId = act.page.id;
             } else if (act.page.name === 'proxy') {
@@ -732,6 +743,7 @@ class Store extends OnlineApp {
         case 'undo': this._undoId = act.id; this._undo(); break;
         case 'setup': this._setup(act.id); break;
         case 'restart': this._restart(); break;
+        case 'safe-mode-off': this._privileged({ op: 'safe-mode-off' }); break;
         case 'source-remove': this._sourceId = act.id; this._removeSource(); break;
         case 'account-remove': this._tokenId = act.id; this._removeAccount(); break;
         case 'add-source': this._addSource(); break;
@@ -1519,6 +1531,8 @@ class Store extends OnlineApp {
         const connected = this._connected && !!st;
         this._set(C.status, 'Text', connected ? statusLine(st, true) : statusLine(null, false, !!readSecret()), 'Text');
         this._set(C.check, 'Text', connected && st.catalog.checking ? tr("Checking") : tr("Check for updates"), 'Text');
+        // the first item that takes the focus: the start screen opens on it
+        this._show(C.safeModeOff, connected && !!st.safeMode && !st.busy);
 
         const busy = connected ? st.busy : null;
         const busyRow = busy && st.components.find((c) => c.id === busy.id);

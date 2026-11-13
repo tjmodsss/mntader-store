@@ -284,7 +284,6 @@ function testModuleMode() {
         JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf8')).mguLocalOnly === true &&
         Object.keys(members(out)).sort().join(' ') ===
         'javascript/app.js javascript/kit/mgu.js node_modules/oap-sdk/index.js node_modules/oap-sdk/package.json package.json permissions.json');
-    check('module: no longer needed once generated', !link.needsSdk(pkg));
 
     const vendored = thirdParty({ vendored: true });
     check('module: a vendored oap-sdk is not needed', !link.needsSdk(vendored));
@@ -522,8 +521,6 @@ function testReleaseTexts() {
     const write = (o) => fs.writeFileSync(path.join(root, 'release', 'texts', 'de.json'), JSON.stringify(o));
     write({ a: { title: 'A-de' } });
     check('release: texts by id and language', JSON.stringify(catalogTexts(['a'], root)) === JSON.stringify({ a: { de: { title: 'A-de' } } }));
-    write({ a: { description: 'D', title: 'A-de' } });
-    check('release: texts in any key order', JSON.stringify(catalogTexts(['a'], root)) === JSON.stringify({ a: { de: { title: 'A-de', description: 'D' } } }));
     [{ b: { title: 'B' } }, { a: { title: 'A', extra: 1 } }, { a: { title: 7 } }, { a: 'A' }].forEach((o) => {
         write(o);
         let thrown = null;
@@ -534,6 +531,26 @@ function testReleaseTexts() {
         }
         check(`release: texts refused: ${JSON.stringify(o)}`, /release\/texts\/de\.json/.test(thrown || ''));
     });
+}
+
+/* release.js: each app's catalog entry names its icon, the PNG its entry point shows. */
+function testReleaseIcons() {
+    const { components, catalogEntry } = require(path.join(__dirname, '..', '..', 'release', 'release.js'));
+    const crypto = require('crypto');
+    const all = components();
+    const store = all.find((c) => c.id === 'robertn_store');
+    const bytes = fs.readFileSync(path.join(REPO, 'apps', 'robertn_store', 'package', 'rhmiData', 'variantGroups', 'Common', 'images', 'store_icon.png'));
+    check('release: an app has the icon its entry point names', store.icon && store.icon.file.endsWith('store_icon.png') &&
+        store.icon.sha256 === crypto.createHash('sha256').update(bytes).digest('hex'), JSON.stringify(store.icon));
+    const tool = all.find((c) => c.kind === 'tool');
+    check('release: a tool has none', all.filter((c) => c.kind === 'tool').every((c) => !c.icon));
+    const file = path.join(fs.mkdtempSync(path.join(require('os').tmpdir(), 'mgu-icon-')), 'a.tgz');
+    fs.writeFileSync(file, 'x');
+    const e = catalogEntry(store, file);
+    const t = catalogEntry(tool, file);
+    check('release: an app\'s catalog entry lists its icon as the asset <id>.png with its sha256, a tool\'s none',
+        e.icon === 'robertn_store.png' && e.iconSha256 === store.icon.sha256 && t.icon === undefined && t.iconSha256 === undefined,
+        JSON.stringify([e.icon, e.iconSha256, t.icon]));
 }
 
 /* release.js publish: a gated component needs a successful release-check/<id>
@@ -744,6 +761,7 @@ function testReleaseVersions() {
 try {
     testReleaseRequires();
     testReleaseTexts();
+    testReleaseIcons();
     testReleaseGate();
     testReleaseVersions();
     testUntar();

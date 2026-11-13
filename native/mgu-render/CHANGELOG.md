@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+## 0.6.20
+
+- Build: the build image's tag is a hash of its definition, so builds from different definitions never share an image.
+- The car test's `reboot` records the restart for the deploy tool's safe mode before it asks for it.
+- Touch and the iDrive controller go back to the HMI as soon as it shows something over an app that takes the input: a popup, the header menu, the voice assistant, or a screen opened from there. The foreground gate follows the HMI's focus on the app's states and reports the app covered once none of them has had it for 150 ms; the renderer then takes the touch divert out and releases `@mgu-renderd-ccu` (`covered by the HMI: <uid>`), and takes them again when the focus comes back (`covered by the HMI: no app`). An app in the HMI's box stays drawn under the popup; an app on a layer is taken off until it goes. Touch and the controller stayed with the app in front: the popup could not be closed, and a screen opened from the header menu answered neither, its touches going to the app hidden under it.
+- An app whose picture stays as it was through 4 touches or controller turns in a row (within 10 s) gets neither for 10 s; they go to the HMI, and an app on a layer is taken off meanwhile (`<app>: 4 inputs left its picture as it was - touch and the controller go to the HMI for 10 s`, then `<app>: takes touch and the controller again`).
+No changes.
+
+## 0.6.19
+
+- No Remove in the Store: the Renderer stays while the Store is installed.
+
+## 0.6.18
+
+- The page template stops being mounted into the HMI after two boots that mounted it and ended in an HMI failure, with no healthy boot between them: a restart record of recmgr (`hmi.service`) or crashhandler (`HmiMain3D`) written after the mount, read at the shutdown (a drop-in of `var-opt-ro.service`) or at the next boot. A boot counts only on such a record; a switch-off, a restart from BMW's menu, the Store or an update, `systemctl reboot`, a power cut or a slow HMI counts nothing, and an HMI that ran 120 s unbroken with the template clears the count. The HMI then starts with its stock widgets, apps get their layer, and the Renderer's page says `In-page drawing unavailable: the HMI failed with the page template` until another HmiMain3D or template comes. README.md, "The HMI and the page template".
+
 ## 0.6.17
 
 - The page template stops being mounted into the HMI after two boots that mounted it and ended in an HMI failure, with no healthy boot between them: a restart record of recmgr (`hmi.service`) or crashhandler (`HmiMain3D`) written after the mount, read at the shutdown (a drop-in of `var-opt-ro.service`) or at the next boot. A boot counts only on such a record; a switch-off, a restart from BMW's menu, the Store or an update, `systemctl reboot`, a power cut or a slow HMI counts nothing, and an HMI that ran 120 s unbroken with the template clears the count. The HMI then starts with its stock widgets, apps get their layer, and the Renderer's page says `In-page drawing unavailable: the HMI failed with the page template` until another HmiMain3D or template comes. README.md, "The HMI and the page template".

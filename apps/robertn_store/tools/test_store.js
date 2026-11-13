@@ -303,6 +303,26 @@ function run() {
         app._restart();
         eq(sent.map(secretless), [{ op: 'reboot' }]);
         eq(sent[0].secret, 'deadbeef');
+        // safe mode: the status line says so, Leave safe mode is shown, and it sends safe-mode-off with the secret
+        app._client.emit('state', Object.assign({}, ST, { safeMode: { at: '2026-11-09T10:00:00Z', reason: 'test' } }));
+        return tick();
+    }).then(() => {
+        eq(last(/storeStatus\.\d*\.?Text/).split('=')[1], 'Safe mode');
+        eq(last(/storeSafeModeOff\.Visible/), 'storeSafeModeOff.Visible=1', 'Leave safe mode shown in safe mode');
+        reset();
+        app._components.storeSafeModeOff.emit('action', {});
+        eq(sent.map(secretless), [{ op: 'safe-mode-off' }]);
+        eq(sent[0].secret, 'deadbeef');
+        // not while an install runs
+        app._client.emit('state', Object.assign({}, ST, { safeMode: { at: null, reason: null }, busy: { id: 'doom', op: 'install', phase: 'download' } }));
+        return tick();
+    }).then(() => {
+        eq(last(/storeSafeModeOff\.Visible/), 'storeSafeModeOff.Visible=0', 'Leave safe mode hidden while an install runs');
+        app._client.emit('state', ST);
+        return tick();
+    }).then(() => {
+        eq(last(/storeSafeModeOff\.Visible/), 'storeSafeModeOff.Visible=0', 'Leave safe mode hidden out of safe mode');
+        eq(last(/storeStatus\.\d*\.?Text/).split('=')[1] !== 'Safe mode', true, 'no safe mode in the status line');
         // an error of any length is written whole: the status line and a source's error wrap over their rows
         app._sourceId = 'idrive7-apps';
         app._client.emit('state', Object.assign({}, ST, { components: [comp({ error: LONG })],
@@ -933,6 +953,18 @@ function runWidgetsExtra() {
         reset();
         app._act({ do: 'remove', id: 'doom', tools: ['mgu-renderd'] });
         eq(sent.map(secretless), [{ op: 'uninstall', id: 'doom', tools: ['mgu-renderd'] }], 'as the drawn Remove all does');
+        // a refused Remove: the updater's reason, for that component's page, until its page or Remove opens again
+        app._client.emit('reply-error', 'Waze on cluster needs doom', 'uninstall');
+        eq(app._drawnModel().removeNote, { id: 'doom', error: 'Waze on cluster needs doom', by: null }, 'a refused Remove keeps the reason');
+        app._client.emit('reply-error', `${st.components[0].title} needs doom`, 'uninstall');
+        eq(app._drawnModel().removeNote.by, st.components[0].id, 'and the component that needs it, by its title');
+        app._act({ do: 'open', page: { name: 'confirm', kind: 'remove', id: 'doom' } });
+        eq(app._drawnModel().removeNote, null, 'a new Remove clears it');
+        app._client.emit('reply-error', 'Waze on cluster needs doom', 'uninstall');
+        app._act({ do: 'open', page: { name: 'app', id: 'doom' } });
+        eq(app._drawnModel().removeNote, null, 'so does opening a component\'s page');
+        app._back();
+        app._back();
         reset();
         app._client.emit('state', st);
         return tick();
@@ -1013,6 +1045,7 @@ function runDrawn() {
         eq(gpu.visible, true, 'shown with its host state');
         eq(gpu.claims, [mode === 'embed' ? { x: 0, y: 0, w: 1796, h: 632 } : { x: 0, y: 0, w: 1790, h: 638 }], 'touch claimed: the box');
         eq(frames.length > 0 && drawn.items.some((i) => i.label === 'DOOM'), true, 'the Store tab drawn');
+        eq(drawn.filter, 'app', 'the Store tab opens on Apps');
         eq(app._drawnModel().version, 'test', 'the Store\'s version, from where this HMI\'s oap-sdk keeps package.json');
         eq([lastText(proxy(1, 0)), lastText(proxy(1, 3)), lastText(proxy(1, 4)), lastText(proxy(1, 7))],
             ['Store', 'Settings', 'All', 'DOOM'], 'proxies in focus order: side menu, filters, tiles');
@@ -1203,7 +1236,8 @@ function runDrawn() {
         eq(drawn.stack.length, 1, 'BACK leaves the page');
         eq(gpu.visible, true, 'and the tabs show');
         eq(drawn.focus, 7, 'the focus back on the tile the page opened from');
-        // touch: a tap on Renderer's tile opens it; Install installs it beside the other renderer
+        // touch: under Tools, a tap on Renderer's tile opens it; Install installs it beside the other renderer
+        app._act({ do: 'filter', filter: 'tool' });
         reset();
         const tile = drawn.items.find((i) => i.label === 'Renderer');
         gpu.emit('touch', 'down', tile.x + 10, tile.y + 10);
@@ -1218,6 +1252,7 @@ function runDrawn() {
         return tick();
     }).then(() => {
         eq(sent, [{ op: 'install', id: 'mgu-render' }]);
+        app._act({ do: 'filter', filter: 'app' });
         // the install ends with the tool pending a restart: nothing opens; its page offers Restart head unit
         reset();
         ends('mgu-render', { installed: '0.1.0', status: 'installed', pendingReboot: true });
@@ -1662,6 +1697,69 @@ function runDrawn() {
             eq(drawn.focus, 5, 'with the controller gate the renderer\'s dial counts instead');
             drawn.controller = false;
         }
+        // a tilt (the renderer's CCU with the controller gate, FrontCCU in embed without it): the focus to the nearest
+        // item that way; left with nothing there closes the page, on the tabs it does nothing
+        {
+            drawn.setTab('store');
+            const label = () => (drawn.items[drawn.focus] || {}).label;
+            const tiles = drawn.items.filter((i) => i.box);
+            const first = drawn.items.indexOf(tiles[0]);
+            const tilt = (t) => { gpu.emit('ccu', { seq: 0, knob: 7, press: 0, tilt: t }); gpu.emit('ccu', { seq: 0, knob: 7, press: 0, tilt: 0 }); };
+            drawn.ccu = null;
+            drawn.focus = first;
+            tilt(4);
+            eq(label(), tiles[1].label, 'tilted right, the controller\'s first event: the next tile in the row');
+            gpu.emit('ccu', { seq: 0, knob: 7, press: 0, tilt: 10 });
+            gpu.emit('ccu', { seq: 0, knob: 7, press: 0, tilt: 15 });
+            tilt(10);
+            eq(label(), tiles[0].label, 'tilted left: back to the first tile, once while held, an invalid sample in between');
+            tilt(11);
+            eq(drawn.items.slice(0, 4).map((i) => i.label).indexOf(label()) >= 0, true, 'left of the grid: the side menu (' + label() + ')');
+            tilt(10);
+            eq(drawn.stack.length, 1, 'left of the side menu on the tabs: nothing');
+            drawn.focus = first;
+            drawn.host.act(drawn.items[first].act);
+            eq(drawn.stack.length, 2, 'a tile\'s page');
+            for (let k = 0; k < 8 && drawn.stack.length > 1; k++) {
+                tilt(10);
+            }
+            eq(drawn.stack.length, 1, 'tilting left on a page ends on the tabs, as BACK does');
+            if (mode === 'embed') {
+                const fccu = (d) => frontCcu({ frontRotaryEncoderOperation: 7, frontSequenceNumberOperatingElement: 0,
+                    frontRotaryEncoderPushButton: 'KEINE_BETAETIGUNG', frontRotaryEncoderDeflection: d });
+                drawn.embedProxies = false;
+                drawn.setTab('store');
+                fccu('MITTELSTELLUNG');
+                drawn.focus = first;
+                fccu('OST_KURZ_GEDRUECKT');
+                eq(label(), tiles[1].label, 'FrontCCU tilted east: the next tile');
+                fccu('SIGNAL_UNGUELTIG');
+                fccu('OST_KURZ_GEDRUECKT');
+                eq(label(), tiles[1].label, 'held: once, an invalid sample in between');
+                fccu('MITTELSTELLUNG');
+                drawn.focus = 0;
+                fccu(7);
+                eq(label(), drawn.items[1].label, 'FrontCCU tilted south (as an ordinal): the next item down the side menu');
+                const at = drawn.focus;
+                ['WEST_KURZ_GEDRUECKT', 'NORD_KURZ_GEDRUECKT', 10, 1].forEach((d) => { fccu(0); fccu(d); });
+                fccu(0);
+                eq([drawn.focus, drawn.stack.length], [at, 1], 'FrontCCU west and north: the HMI\'s (BACK, its header menu), not the Store\'s');
+            }
+        }
+        // the deploy tool's safe mode: Leave safe mode on Store after the side menu; a press asks the updater to leave it
+        drawn.setTab('store');
+        const safe = Object.assign({}, st, { safeMode: { at: '2026-11-09T10:00:00Z', reason: 'test' } });
+        app._client.emit('state', safe);
+        eq([drawn.items[4].label, lastText(proxy(1, 4)), drawn.items.some((i) => i.label === 'Restart now')], ['Leave safe mode', 'Leave safe mode', false],
+            'safe mode: Leave safe mode after the side menu, in Restart now\'s place');
+        reset();
+        drawn.proxyPress(1, 4);
+        eq(sent.map(secretless), [{ op: 'safe-mode-off' }], 'safe mode: Leave safe mode sends safe-mode-off');
+        eq(sent[0].secret, 'deadbeef', 'with the secret');
+        app._client.emit('state', Object.assign({}, safe, { busy: { id: 'doom', op: 'install', phase: 'download' } }));
+        eq(drawn.items.some((i) => i.label === 'Leave safe mode'), false, 'safe mode: Leave safe mode hidden while an install runs');
+        app._client.emit('state', st);
+        eq(drawn.items.some((i) => i.label === 'Leave safe mode'), false, 'out of safe mode: no Leave safe mode');
         // Installed puts what runs or waits first; while the focus is on a row the rows stay where they are, so it stays on its row
         const inst = (doom) => Object.assign({}, st, { components: [
             comp({ id: 'alpha', title: 'Alpha', version: '1.0.0', installed: '1.0.0', status: 'installed' }),

@@ -2,6 +2,49 @@
 
 ## Unreleased
 
+## 0.8.45
+
+- An app built by its repository's script has its SDK donor looked up while its files download, and the build uid's processes are killed with the system's `kill` (with Node where there is none, or something of that uid is still running): its build starts and ends sooner.
+
+## 0.8.44
+
+- Only an install asked for (the Store, the phone page) leaves the deploy tool's safe mode. The updater's own repairs (a lost app installed again, a stale tool laid again, updated or installed again, and the rollback of a Store such a repair updated that did not start) keep it.
+
+## 0.8.43
+
+- Installing or updating from a public repository's branch downloads the component's files over a few connections kept open, six at a time, instead of starting a new download for each file. The progress moves as the bytes come.
+
+## 0.8.42
+
+- The deploy tool's safe mode shows in the state (`safeMode`), and the Store's Leave safe mode (`safe-mode-off`) leaves it. The updater runs in safe mode.
+- A tool installed from a repository's tree keeps its units' `runsInSafeMode`.
+- Before it asks for a restart of the head unit, the updater records it for the deploy tool, so the restart never counts against safe mode.
+
+## 0.8.41
+
+- The phone page's Logs list the Renderer's journals (`mgu-render`, `mgu-render-hmi`) and the deploy tool's check after a restart (`mgu-deploy-verify`).
+
+## 0.8.40
+
+- Installing or updating an app or tool from a public repository's branch downloads only its own files and the shared files its build needs, instead of the whole repository. Update all downloads each shared file once.
+- Downloads resume where they stopped on a weak connection and keep trying while they make progress, instead of starting over and giving up after a few cuts.
+
+## 0.8.39
+
+- The deploy tool's own update goes first among queued requests, so Update all installs every other component through the new deploy tool.
+
+## 0.8.38
+
+- A tool stays while an installed app or tool still requires it, also when no source lists that app any more (its USB stick is out, or its source was removed): Remove all neither offers nor takes it along, and it can't be removed on its own. The updater records what each component requires when it installs it, and for components installed earlier when their source lists the installed version.
+
+## 0.8.37
+
+- The tools the Store's setup installs (Internet uplink, Renderer, App privacy, Python, the deploy tool and the updater) can't be removed from the Store: not on their own page, and not with an app's Remove all.
+
+## 0.8.36
+
+- An installed app's icon from its source is fetched too, so a removed app keeps its icon in the Store.
+
 ## 0.8.35
 
 - TJM Store: `allowed_repos` (updater.conf) names the only GitHub repos the updater installs from. When set, any other source in `sources.json`, a web address or a USB stick is left out, a new one is refused, and the built-in source is always `builtin_repo`. Empty: as before.

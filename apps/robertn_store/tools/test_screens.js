@@ -209,6 +209,12 @@ broken.components = broken.components.map((c) => c.id === 'mgu-render' ? Object.
     problem: 'In-page drawing unavailable: no identifier table in HmiMain3D' }) : c);
 f = screen('app-renderer', {}, broken);
 eq([text(f, 'problem'), text(f, 'note1')], ['In-page drawing unavailable: no identifier table in HmiMain3D', ''], 'an installed tool\'s problem');
+// a refused Remove: who needs it, on that component's page only
+f = screen('app-remove-refused');
+eq([text(f, 'note1'), own(f)], ['Needed by Vehicle control', ['Undo update', 'Remove', 'Back']], 'a Remove refused for a dependent');
+eq(text(screen('app-remove-refused', { stack: [{ name: 'main' }, { name: 'app', id: 'gauges' }] }), 'note1'), '', 'another component\'s page');
+eq(text(screen('app-remove-refused', { removeNote: { id: 'mgu-uplink', error: 'the head unit is restarting', by: null } }), 'note1'),
+    'the head unit is restarting', 'another refusal as the updater says it');
 f = screen('app-downloading');
 eq(own(f), ['Back'], 'nothing to press while it downloads');
 eq([f.values.progress.label, f.values.progress.right, f.values.icon.progress], ['Downloading', '42 %', 0.42]);
@@ -422,23 +428,26 @@ eq(text(f, 'unit'), 'iDrive 7 · BMW MGU P18_23w44.2-1-3 mgu-high');
     ok(end > lab.x && end + 16 <= unit.x && versions.y + versions.h <= unit.y,
         `iDrive 8: the label (widest "${widest}", to x ${Math.round(end)}) clear of the head unit's line at ${unit.x}`);
 }
-// the Access card shows three rows: the controller's focus on each later row scrolls it into view, in order, on every unit
+// the Access card shows all its rows at once, in order, on every unit: none scrolled to, the focus on each moves nothing
 Object.keys(UNITS).forEach((u) => {
     const m = fixture.model(fixture.screens().find((x) => x[0] === 'settings')[1]);
     const scroll = {};
     const rows = ['Wi-Fi', 'Accounts', 'Preferred connection', 'Proxy', 'Phone access'];
-    const rest = frame(m, { textScale: UNITS[u].scale, scroll: {}, layout: UNITS[u].layout }).items;
-    const at = rest.map((i) => i.label);
-    eq(['Wi-Fi', 'Accounts', 'Preferred connection', 'Proxy', 'Phone access'].map((l) => !rest[at.indexOf(l)].reveal), [true, true, true, false, false],
-        `${u}: Wi-Fi, Accounts and Preferred connection in view at first, the rows after them scrolled to`);
+    const items = frame(m, { textScale: UNITS[u].scale, scroll: {}, layout: UNITS[u].layout }).items;
+    const at = items.map((i) => i.label);
+    const clear = rows.slice(1).map((l, k) => {
+        const a = items[at.indexOf(rows[k])], b = items[at.indexOf(l)];
+        return b.y - (a.y + a.h) > 8;
+    });
+    eq(clear, [true, true, true, true], `${u}: the focus ring on an Access row (8 px out) clear of the next row`);
     const shown = rows.map((l) => {
         const g = frame(m, { textScale: UNITS[u].scale, focus: at.indexOf(l), scroll, layout: UNITS[u].layout });
         const it = g.items[at.indexOf(l)];
         const box = it.box;
         return it.label === l && !it.reveal && it.y >= box.y - 1 && it.y + it.h <= box.y + box.h + 1;
     });
-    eq([rows.map((l) => at.indexOf(l) - at.indexOf('Wi-Fi')), shown, scroll['settings.access'] > 0], [[0, 1, 2, 3, 4], [true, true, true, true, true], true],
-        `${u}: Access scrolls with the focus`);
+    eq([rows.map((l) => at.indexOf(l) - at.indexOf('Wi-Fi')), shown, scroll['settings.access'] || 0], [[0, 1, 2, 3, 4], [true, true, true, true, true], 0],
+        `${u}: every Access row in view, none scrolled`);
 });
 eq(text(f, 'versions'), 'Updater 0.4.0 · Store 0.7.0 · Renderer mgu-renderd 1.1.0');
 eq(text(screen('settings', {}, { allProviders: { renderer: [{ id: 'mgu-render', version: '0.2.0' }, { id: 'mgu-renderd', version: '1.1.2' }] } }),
@@ -502,6 +511,31 @@ Object.keys(UNITS).forEach((unit) => {
         const it = item(g, 'Restart now');
         eq(g.items.filter((o) => o !== it && !o.box && overlap(it, o)).map((o) => o.label), [], `${unit} ${name}: Restart now overlaps no other button`);
     });
+});
+
+// Leave safe mode on Store: in the deploy tool's safe mode while nothing installs, after the side menu, in Restart now's place
+const SAFE = { safeMode: { at: '2026-11-09T10:00:00Z', reason: '4 starts' } };
+f = screen('store-safe-mode');
+eq([f.labels.slice(0, 5), f.items[4].act, text(f, 'subtitle')], [['Store', 'Installed', 'USB', 'Settings', 'Leave safe mode'],
+    { do: 'safe-mode-off' }, 'Safe mode'], 'Store in safe mode: the side menu, then Leave safe mode; the status line says so');
+eq(f.labels.indexOf('Restart now'), -1, 'Restart now gives it its place');
+eq(screen('store-safe-mode', {}, { busy: { id: 'doom', op: 'install', phase: 'download' } }).labels.indexOf('Leave safe mode'), -1,
+    'hidden while an install runs');
+eq(screen('store-safe-mode', { connected: false }).labels.indexOf('Leave safe mode'), -1, 'hidden without the updater');
+eq(screen('store-restart').labels.indexOf('Leave safe mode'), -1, 'none out of safe mode');
+eq(['installed', 'usb', 'settings'].map((n) => screen(n, {}, SAFE).labels.indexOf('Leave safe mode')), [-1, -1, -1], 'on Store only');
+Object.keys(UNITS).forEach((unit) => {
+    const p = UNITS[unit];
+    const at = (name) => {
+        const s = fixture.screens().find((x) => x[0] === name);
+        const m = fixture.model(s[1], Object.assign(fixture.state(), s[2]));
+        return frame(m, { textScale: p.scale, focus: -1, scroll: {}, layout: p.layout });
+    };
+    const g = at('store-safe-mode');
+    const it = g.items[4];
+    const now = at('store-restart').items.find((o) => o.label === 'Restart now');
+    eq([it.label, it.x + it.w, it.y, it.h], ['Leave safe mode', now.x + now.w, now.y, now.h], `${unit} Store: Leave safe mode where Restart now is`);
+    eq(g.items.filter((o) => o !== it && !o.box && overlap(it, o)).map((o) => o.label), [], `${unit} Store: Leave safe mode overlaps no other button`);
 });
 
 // a source: Remove; the GitHub App's install page while a sign-in does not reach it

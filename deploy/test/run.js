@@ -329,6 +329,7 @@ function fakeRoot(opts) {
         MGU_DEPLOY_PROC: p('proc'),
         MGU_DEPLOY_PROC_STAT: p('proc/stat'),
         MGU_DEPLOY_PROC_MOUNTS: p('proc/mounts'),
+        MGU_DEPLOY_RUN: p('run/mgu-deploy'),
         MGU_DEPLOY_CODING: p('dev/shm/rawcodingdata'),
         MGU_DEPLOY_BOOT_ID: p('proc/boot_id'),
         MGU_DEPLOY_SYSTEMCTL: path.join(HERE, 'fake_systemctl.sh'),
@@ -1962,7 +1963,13 @@ function testInplace() {
         'second_app' in (readJsonOrNull(root.p(`var/opt/public/oap/oap_${MGR}/data/custom_apps.json`)) || {}) &&
         JSON.stringify(root.state().apps.second_app) === JSON.stringify({ uid: 13002, version: '1.0.0' }), JSON.stringify(root.state()));
     check('in place: the fallback copy is not rewritten when its bytes are the same', fs.statSync(copy).mtimeMs === copyAt);
+    // the entry point's code cache of 1.0.0's bundle: the firmware's V8 runs it for a bundle of the same length
+    const cache = path.join(root.home(13001), 'data/app.js.bytecode'), own = path.join(root.home(13001), 'data/settings.json');
+    write(cache, 'cache of 1.0.0');
+    write(own, '{}');
     const up = root.run(['install', '--artifact', appArtifact('fixture_app', '1.1.0', true), '--yes']);
+    check('in place: an update removes the app\'s code cache, its other data stays', up.status === 0 && !fs.existsSync(cache) &&
+        fs.existsSync(own) && up.out.includes('fixture_app: its code cache goes'), up.out);
     check('in place: an update is the running manager\'s own update, uid kept, no re-seed, no bounce', up.status === 0 &&
         root.kills().length === 1 && readJson(root.entry('fixture_app')).userId === 13001 &&
         readJson(path.join(root.home(13001), 'source/package.json')).version === '1.1.0' &&
@@ -1973,6 +1980,16 @@ function testInplace() {
     check('in place: the hook logged both requests in the manager\'s log',
         root.managerLog().includes('hook mgu-deploy in-place install second_app: done') &&
         root.managerLog().includes('hook mgu-deploy in-place update fixture_app: done'), root.managerLog().join('\n'));
+    // the app owns its home: a data folder that is a link leads the removal nowhere
+    const elsewhere = root.p('var/opt/elsewhere');
+    write(path.join(elsewhere, 'app.js.bytecode'), 'not the app\'s');
+    fs.renameSync(path.join(root.home(13001), 'data'), root.p('var/opt/fixture_data'));
+    fs.symlinkSync(elsewhere, path.join(root.home(13001), 'data'));
+    const linked = root.run(['install', '--artifact', appArtifact('fixture_app', '1.2.0', true), '--yes']);
+    check('in place: an update leaves a file a linked data folder leads to', linked.status === 0 &&
+        fs.existsSync(path.join(elsewhere, 'app.js.bytecode')) && !linked.out.includes('its code cache goes'), linked.out);
+    fs.unlinkSync(path.join(root.home(13001), 'data'));
+    fs.renameSync(root.p('var/opt/fixture_data'), path.join(root.home(13001), 'data'));
 
     // a copy written after the manager started: it runs older code, so a bounce
     fs.utimesSync(copy, Date.now() / 1000 + 60, Date.now() / 1000 + 60);
@@ -2827,11 +2844,11 @@ function testSelf() {
     check('self: deploy/hu artifact deploy builds mgu-deploy@<version>.tgz', builds.every((b) => b.r.status === 0 && fs.existsSync(b.file)),
         builds.map((b) => b.r.stderr).join('\n'));
     check('self: two builds are byte-identical', sha256(fs.readFileSync(builds[0].file)) === sha256(fs.readFileSync(builds[1].file)));
-    check('self: the artifact holds its ten files and its manifest', JSON.stringify(tarList(builds[0].file)) === JSON.stringify([
+    check('self: the artifact holds its thirteen files and its manifest', JSON.stringify(tarList(builds[0].file)) === JSON.stringify([
         'component.json', 'files/fallback_build.js', 'files/mgu-app-fallback-id8.service', 'files/mgu-app-fallback.service',
-        'files/mgu-deploy-apply.service', 'files/mgu-deploy-cleanup.service', 'files/mgu-deploy-verify.service',
-        'files/mgu-deploy.js', 'files/mgu-deploy.sh',
-        'files/oap_link.js', 'files/oap_pack.js']),
+        'files/mgu-deploy-apply.service', 'files/mgu-deploy-cleanup.service', 'files/mgu-deploy-safe-mode.service',
+        'files/mgu-deploy-verify.service', 'files/mgu-deploy.js', 'files/mgu-deploy.sh',
+        'files/oap_link.js', 'files/oap_pack.js', 'files/safe_mode.sh', 'files/var-opt-ro-safe-mode.conf']),
     tarList(builds[0].file).join(' '));
     const built = untar(builds[0].file)['component.json'].data;
     const huText = fs.readFileSync(HU, 'utf8');
@@ -2859,7 +2876,8 @@ function testSelf() {
     // the kit layout: component.json beside the script
     const kit = fs.mkdtempSync(path.join(T, 'kit-'));
     ['mgu-deploy.js', 'mgu-deploy.sh', 'fallback_build.js', 'mgu-app-fallback.service', 'mgu-deploy-apply.service', 'mgu-deploy-verify.service',
-        'mgu-deploy-cleanup.service', 'mgu-app-fallback-id8.service'].forEach((n) =>
+        'mgu-deploy-cleanup.service', 'mgu-app-fallback-id8.service', 'safe_mode.sh', 'mgu-deploy-safe-mode.service',
+        'var-opt-ro-safe-mode.conf'].forEach((n) =>
         fs.copyFileSync(path.join(DEPLOY, 'unit', n), path.join(kit, n)));
     LINK_FILES.forEach((n) => fs.copyFileSync(path.join(TOOLS, n), path.join(kit, n)));
     fs.copyFileSync(path.join(DEPLOY, 'component.json'), path.join(kit, 'component.json'));
@@ -3509,6 +3527,89 @@ function hookArtifact(version, edit) {
         throw new Error(`deploy/hu artifact failed: ${r.stderr}`);
     }
     return path.join(out, `fixture-tool@${version}.tgz`);
+}
+
+/* restore: a tool the backup puts on another version, or removes, runs the
+ * deactivate of the version it leaves first, all of it in place; one that
+ * fails refuses the restore and that version is activated again; a tool
+ * the backup leaves on its version runs no hook. */
+function testRestoreDeactivate() {
+    const fresh = () => {
+        const root = fakeRoot({ recmgr: ['fixture-tool'], active: 'fixture-tool.service' });
+        root.log = `${root.R}.hooks.log`;
+        root.hooks = () => (fs.existsSync(root.log) ? fs.readFileSync(root.log, 'utf8').split('\n').filter(Boolean) : []);
+        root.env = (extra) => Object.assign({ FAKE_HOOK_LOG: root.log }, extra || {});
+        root.current = () => { try { return fs.readlinkSync(path.join(root.tool('fixture-tool'), 'current')); } catch (e) { return null; } };
+        root.snap = () => fs.readdirSync(root.p('var/opt/mgu-deploy/backups')).filter((d) => /-install$/.test(d)).sort().pop();
+        let r = root.run(['install', '--artifact', hookArtifact('1.0.0'), '--yes'], root.env());
+        if (r.status !== 0) throw new Error(r.out);
+        r = root.run(['install', '--artifact', hookArtifact('1.1.0'), '--yes'], root.env());
+        if (r.status !== 0) throw new Error(r.out);
+        return root;
+    };
+    const short = (lines) => lines.map((l) => l.split(' ').slice(0, 2).join(' '));
+
+    // back to the version before the update
+    let root = fresh(), snap = root.snap(), n = root.hooks().length;
+    let r = root.run(['restore', snap, '--yes'], root.env());
+    check('restore deactivate: a restore putting a tool back on its earlier version runs the deactivate of the version it leaves first, all of it in place',
+        r.status === 0 && root.current() === 'versions/1.0.0' && root.hooks().slice(n).length === 1 &&
+        root.hooks()[n] === 'deactivate 1.1.0 cwd=fixture-tool/versions/1.1.0 current=versions/1.1.0 unit=yes active=active', `${r.out}\n${root.hooks().slice(n).join('\n')}`);
+    check('restore deactivate: the version left is recorded deactivated',
+        ((root.state().deactivated || {})['fixture-tool'] || []).includes('1.1.0'), JSON.stringify(root.state().deactivated));
+
+    // to a version recorded deactivated (a rollback left it): its record goes once the restore makes it current
+    root = fresh();
+    r = root.run(['rollback', 'fixture-tool', '--yes'], root.env());
+    if (r.status !== 0 || root.current() !== 'versions/1.0.0') throw new Error(r.out);
+    snap = fs.readdirSync(root.p('var/opt/mgu-deploy/backups')).filter((d) => /-rollback$/.test(d)).sort().pop();
+    n = root.hooks().length;
+    r = root.run(['restore', snap, '--yes'], root.env());
+    const marks = (root.state().deactivated || {})['fixture-tool'] || [];
+    check('restore deactivate: a restore back to a version recorded deactivated runs the deactivate of the one it leaves, and the version made current keeps no record',
+        r.status === 0 && root.current() === 'versions/1.1.0' && JSON.stringify(short(root.hooks().slice(n))) === JSON.stringify(['deactivate 1.0.0']) &&
+        !marks.includes('1.1.0') && marks.includes('1.0.0'), `${r.out}\n${JSON.stringify(marks)}\n${root.hooks().slice(n).join('\n')}`);
+
+    // a backup recording the tool's current on the version it is on: no hook
+    root = fresh();
+    r = root.run(['install', '--artifact', hookArtifact('1.1.0'), '--yes'], root.env());
+    if (r.status !== 0) throw new Error(r.out);
+    snap = root.snap(); n = root.hooks().length;
+    r = root.run(['restore', snap, '--yes'], root.env());
+    check('restore deactivate: a backup recording the tool on its current version runs no hook of it',
+        r.status === 0 && root.current() === 'versions/1.1.0' && root.hooks().slice(n).length === 0, `${r.out}\n${root.hooks().slice(n).join('\n')}`);
+
+    // a deactivate that fails: refused, nothing restored, activated again
+    root = fresh(); snap = root.snap(); n = root.hooks().length;
+    r = root.run(['restore', snap, '--yes'], root.env({ FAKE_HOOK_FAIL: 'deactivate@1.1.0' }));
+    check('restore deactivate: a deactivate that fails refuses the restore, exit 2, nothing restored, and that version is activated again',
+        r.status === 2 && root.current() === 'versions/1.1.0' && r.out.includes('fixture-tool 1.1.0: deactivate exited 3') && r.out.includes('nothing restored') &&
+        JSON.stringify(short(root.hooks().slice(n))) === JSON.stringify(['deactivate 1.1.0', 'activate 1.1.0']), `${r.out}\n${root.hooks().slice(n).join('\n')}`);
+
+    // restore stock: the tool goes, after the hooks of its removal (a kept version whose deactivate is owed
+    // runs it too); a restart its deactivate asks for is pending under the deploy tool
+    root = fresh();
+    const owed = root.state();
+    owed.deactivate_owed = { 'fixture-tool': ['1.0.0'] };
+    write(root.p('var/opt/mgu-deploy/state.json'), JSON.stringify(owed));
+    n = root.hooks().length;
+    r = root.run(['restore', 'stock', '--yes'], root.env({ FAKE_HOOK_REBOOT: 'patch removed; the original runs from the next start', FAKE_HOOK_REBOOT_ON: 'deactivate@1.1.0' }));
+    const after = root.state();
+    check('restore deactivate: a restore that removes a tool runs the hooks of its removal first, and keeps no record of it',
+        r.status === 0 && root.current() === null && JSON.stringify(short(root.hooks().slice(n))) === JSON.stringify(['deactivate 1.1.0', 'deactivate 1.0.0']) &&
+        !((after.deactivated || {})['fixture-tool']) && !((after.deactivate_owed || {})['fixture-tool']), `${r.out}\n${root.hooks().slice(n).join('\n')}`);
+    check('restore deactivate: a restart the removed tool\'s deactivate asks for is pending under the deploy tool',
+        (after.pending_reboot || []).some((p) => p.id === 'mgu-deploy' && /fixture-tool removed: patch removed/.test(p.reason)) &&
+        !(after.pending_reboot || []).some((p) => p.id === 'fixture-tool'), JSON.stringify(after.pending_reboot));
+
+    // a backup that leaves the tool on its version: no hook
+    root = fresh();
+    r = root.run(['install', '--artifact', appArtifact('fixture_app', '1.0.0', true), '--yes'], root.env());
+    if (r.status !== 0) throw new Error(r.out);
+    snap = root.snap(); n = root.hooks().length;
+    r = root.run(['restore', snap, '--yes'], root.env());
+    check('restore deactivate: a restore that leaves a tool on its version runs no hook of it',
+        r.status === 0 && root.current() === 'versions/1.1.0' && root.hooks().slice(n).length === 0, `${r.out}\n${root.hooks().slice(n).join('\n')}`);
 }
 
 function testHooks() {
@@ -4287,6 +4388,9 @@ function testRemoveWhenUnused() {
         !fs.existsSync(fl.p('etc/systemd/system/late.target.wants/mgu-deploy-cleanup.service')) &&
         !fs.existsSync(fl.p('var/opt/mgu-deploy/remove-when-unused.json')) &&
         fs.readFileSync(fl.p('etc/recmgr-restartlist.conf'), 'utf8') === recBefore, r.out);
+    const flCalls = fl.systemctlCalls();
+    check('unused: that rollback reloads systemd after the units are back',
+        flCalls.lastIndexOf('daemon-reload') > flCalls.lastIndexOf('stop fixture-tool.service'), flCalls.join("; ") + "\n" + r.out);
     const flog = fs.readFileSync(`${fl.R}.hooks.log`, 'utf8').split('\n').filter(Boolean).map((l) => l.split(' ').slice(0, 2).join(' '));
     check('unused: and the tool, back after its deactivate ran, is activated again',
         JSON.stringify(flog.slice(-2)) === JSON.stringify(['deactivate 1.0.0', 'activate 1.0.0']), flog.join('; '));
@@ -4566,26 +4670,6 @@ function testTransactions() {
     check('wants: a stock .wants folder stays, even empty', fs.existsSync(root.p('etc/systemd/system/sockets.target.wants')));
 }
 
-function testTodoLines() {
-    const root = fakeRoot();
-    // display-bridge installs through this tool; status lists its notes
-    write(root.p('var/opt/display-bridge/current/display-bridge.conf'), [
-        '# "TODO(on-car)" marks values the bring-up (BRINGUP.md) must confirm.',
-        '# The group apps connect with. TODO(on-car): confirm',
-        '# (BRINGUP.md step 6).',
-        'socket_group =',
-        '# Touch range. TODO(on-car): step 8.3.',
-        'touch_range = 0,0,4095,4095',
-        'mode = "TODO(on-car) in a value is not a note"',
-        ''].join('\n'));
-    const st = root.status();
-    check('status: each TODO(on-car) note in full, after its key, notes only',
-        st.display_bridge_todo_on_car.length === 2 &&
-        st.display_bridge_todo_on_car.includes('socket_group: TODO(on-car): confirm (BRINGUP.md step 6).') &&
-        st.display_bridge_todo_on_car.includes('touch_range: TODO(on-car): step 8.3.') &&
-        st.display_bridge_todo_on_car.every((l) => /^[a-z_]+: TODO\(on-car\)/.test(l)), JSON.stringify(st.display_bridge_todo_on_car));
-}
-
 /* ---- the updater's tokens ------------------------------------------------------------------ */
 
 const TOKEN = 'github_pat_FIXTURE0only0for0the0deploy0tests0000000000';
@@ -4707,7 +4791,7 @@ function testHuToken() {
         x.stdin(1).toString() === `${TOKEN}\n`, `${x.r.stderr}\n${x.calls.join('\n')}`);
     const staged = Object.keys(untarBuf(x.stdin(0))).sort().join(' ');
     check('hu: the staging upload carries the deploy tool with its linker and packer', staged ===
-        'component.json fallback_build.js mgu-app-fallback-id8.service mgu-app-fallback.service mgu-deploy-apply.service mgu-deploy-cleanup.service mgu-deploy-verify.service mgu-deploy.js mgu-deploy.sh oap_link.js oap_pack.js', staged);
+        'component.json fallback_build.js mgu-app-fallback-id8.service mgu-app-fallback.service mgu-deploy-apply.service mgu-deploy-cleanup.service mgu-deploy-safe-mode.service mgu-deploy-verify.service mgu-deploy.js mgu-deploy.sh oap_link.js oap_pack.js safe_mode.sh var-opt-ro-safe-mode.conf', staged);
     check('hu token: not in any ssh argument, the staging upload or the output',
         x.calls.every((c) => !c.includes(TOKEN)) && !zlib.gunzipSync(x.stdin(0)).includes(TOKEN) &&
         !`${x.r.stdout}${x.r.stderr}`.includes(TOKEN));
@@ -5282,6 +5366,102 @@ function testSourcePackages() {
     check('source: a bad mgu-app.json is refused, exit 2', nr.status === 2 && nr.out.includes('mgu-app.json: version is not x.y.z'), nr.out);
 }
 
+/* Safe mode through an install that installs an app afresh inside it
+ * (reinstallApp's own install): every run with work lifts it, only the
+ * outermost settles it, and a shortfall anywhere in it keeps it. */
+function testSafeModeAfresh() {
+    const file = sourceArtifact('1.2.3');
+    const on = '{"at": "2026-11-09T10:00:00Z", "reason": "test"}\n';
+    const entryFile = (root) => root.p(`var/opt/public/oap/oap_${MGR}/data/apps/robertn_demo.json`);
+    const setup = (fresh) => {
+        const root = donorRoot({ recmgr: ['fixture-tool'], active: 'fixture-tool.service' });
+        [file, plainArtifact('0.2.0')].forEach((a) => {
+            const res = root.run(['install', '--artifact', a, '--yes']);
+            if (res.status !== 0) throw new Error(`setup: ${res.out}`);
+        });
+        // the app waits for its update after a firmware update: an install installs it afresh
+        const e = JSON.parse(fs.readFileSync(entryFile(root), 'utf8'));
+        e.NO_FORCED_UPDATE_NEEDED = false;
+        fs.writeFileSync(entryFile(root), JSON.stringify(e));
+        // the tool lacks its unit: the install lays it again from its kept copy
+        if (!fresh) fs.unlinkSync(root.p('etc/systemd/system/fixture-tool.service'));
+        write(root.p('var/opt/mgu-deploy/safe-mode'), on);
+        return root;
+    };
+    const on_ = (root) => fs.existsSync(root.p('var/opt/mgu-deploy/safe-mode'));
+    const lifted = (root) => fs.existsSync(root.p('run/mgu-deploy/safe-mode-lifted'));
+
+    let root = setup();
+    let r = root.run(['install', '--artifact', file, '--yes']);
+    check('safe mode afresh: a run that lays a tool again and installs an app afresh, all of it through, leaves it',
+        r.status === 0 && r.out.includes('laid again from the copy kept here') && r.out.includes('robertn_demo 1.2.3 installed afresh') &&
+        !on_(root) && !lifted(root) && root.status().pending_reboot.some((p) => p.id === 'mgu-deploy'), r.out);
+
+    // an app installed afresh, nothing else to do
+    root = setup(true);
+    r = root.run(['install', '--artifact', file, '--yes']);
+    check('safe mode afresh: an install that only installs an app afresh, which goes through, leaves it',
+        r.status === 0 && !r.out.includes('laid again') && r.out.includes('robertn_demo 1.2.3 installed afresh') && !on_(root) && !lifted(root), r.out);
+    root = setup(true);
+    r = root.run(['install', '--artifact', file, '--yes'], { FAKE_MGR_REJECT: '1' });
+    check('safe mode afresh: an install that only installs an app afresh, which fails, keeps it',
+        r.status === 1 && r.out.includes('installing afresh failed: robertn_demo') && on_(root) && !lifted(root), r.out);
+
+    // an app's Undo update: one install as to safe mode
+    const undo = () => {
+        const u = fakeRoot();
+        u.run(['install', '--artifact', privacyArtifact(), '--yes']);
+        u.run(['install', '--artifact', appArtifact('fixture_app', '1.0.0', true), '--yes']);
+        const up = u.run(['install', '--artifact', appArtifact('fixture_app', '1.1.0', true), '--yes']);
+        if (up.status !== 0) throw new Error(`setup: ${up.out}`);
+        write(u.p('var/opt/mgu-deploy/safe-mode'), on);
+        return u;
+    };
+    root = undo();
+    write(root.p('var/opt/mgu-deploy/kept/fixture_app/fixture_app@1.0.0.tgz'), 'not a package\n');
+    r = root.run(['rollback', 'fixture_app', '--yes']);
+    check('safe mode: an app rollback that fails, the version before installed again, keeps it',
+        r.status === 1 && /installing fixture_app 1\.1\.0 again/.test(r.out) && on_(root) && !lifted(root), r.out);
+    root = undo();
+    r = root.run(['rollback', 'fixture_app', '--yes']);
+    check('safe mode: an app rollback that goes through leaves it', r.status === 0 && !on_(root) && !lifted(root), r.out);
+    root = undo();
+    r = root.run(['rollback', 'fixture_app', '--keep-safe-mode', '--yes']);
+    check('safe mode: an app rollback with --keep-safe-mode that goes through keeps it', r.status === 0 && on_(root) && !lifted(root), r.out);
+
+    // the tool's first lay fails (its next start runs), the app's install afresh lays it again and goes through
+    root = setup();
+    const starts = Number(fs.readFileSync(root.unitFile('fixture-tool.service.starts'), 'utf8'));
+    fs.writeFileSync(root.unitFile('fixture-tool.service.crash'), `${path.join(root.tool('fixture-tool'), 'current')} versions/0.2.0 ${starts + 1}\n`);
+    r = root.run(['install', '--artifact', file, '--yes']);
+    check('safe mode afresh: a tool laid again that fails (warned), then is laid again by the app\'s install afresh, which goes through, keeps it',
+        r.status === 0 && /fixture-tool 0\.2\.0 is not laid again/.test(r.out) && r.out.includes('robertn_demo 1.2.3 installed afresh') &&
+        fs.existsSync(root.p('etc/systemd/system/fixture-tool.service')) && (r.out.match(/is not laid again/g) || []).length === 1 &&
+        on_(root) && !lifted(root), r.out);
+
+    root = setup();
+    r = root.run(['install', '--artifact', file, '--yes'], { FAKE_MGR_REJECT: '1' });
+    check('safe mode afresh: a tool laid again that goes through and an app installed afresh that fails keep it',
+        r.status === 1 && r.out.includes('laid again from the copy kept here') && r.out.includes('installing afresh failed: robertn_demo') &&
+        on_(root) && !lifted(root), r.out);
+
+    // two apps installed afresh: the first goes through, the second fails
+    const two = sourceArtifact('1.0.0', { id: 'robertn_two', tree: 'robertn_two@1.0.0' });
+    root = setup();
+    r = root.run(['install', '--artifact', two, '--yes']);
+    const e2 = JSON.parse(fs.readFileSync(root.p(`var/opt/public/oap/oap_${MGR}/data/apps/robertn_two.json`), 'utf8'));
+    e2.NO_FORCED_UPDATE_NEEDED = false;
+    fs.writeFileSync(root.p(`var/opt/public/oap/oap_${MGR}/data/apps/robertn_two.json`), JSON.stringify(e2));
+    // that install went through: safe mode on again, the tool lacking its unit again
+    fs.unlinkSync(root.p('etc/systemd/system/fixture-tool.service'));
+    write(root.p('var/opt/mgu-deploy/safe-mode'), on);
+    r = root.run(['install', '--artifact', file, '--artifact', two, '--yes'], { FAKE_MGR_REJECT: 'robertn_two' });
+    check('safe mode afresh: an app installed afresh that goes through, then one that fails, keep it',
+        r.status === 1 && r.out.includes('laid again from the copy kept here') && r.out.includes('robertn_demo 1.2.3 installed afresh') &&
+        r.out.includes('installing afresh failed: robertn_two') &&
+        on_(root) && !lifted(root), r.out);
+}
+
 /* iDrive 7: a current app the app manager marked for an update at its
  * first start after a firmware update ("NO_FORCED_UPDATE_NEEDED": false,
  * which it starts no app with) is installed afresh, its data carried over. */
@@ -5299,6 +5479,7 @@ function testSetUpElsewhere() {
     let root = donorRoot();
     let r = root.run(['install', '--artifact', file, '--yes']);
     write(path.join(root.home(app(root).uid), 'data/settings.json'), '{"theme":"dark"}\n');
+    const cacheOf = (root) => path.join(root.home(app(root).uid), 'data/app.js.bytecode');
     check('forced update: a current app the manager starts is not touched, nor built', r.status === 0 && app(root).stale === null &&
         !root.run(['install', '--artifact', file, '--yes']).out.includes('built robertn_demo'), r.out);
     mark(root);
@@ -5307,13 +5488,14 @@ function testSetUpElsewhere() {
         root.run(['status']).out.includes(`(not working: ${WHY})`), JSON.stringify(app(root)));
     fs.unlinkSync(root.preinstalled('donor_app', '1.0.0'));
     donor.tgz(root.preinstalled('donor_app', '1.1.0'));
+    write(cacheOf(root), 'cache of the build for the firmware before');
     r = root.run(['install', '--artifact', file, '--yes']);
     const entry = JSON.parse(fs.readFileSync(entryFile(root), 'utf8'));
     check('forced update: an install installs it afresh, built for this unit, its data carried over, the mark gone',
         r.status === 0 && r.out.includes(`robertn_demo 1.2.3 already installed; ${WHY}: installed afresh after the rest`) &&
         r.out.includes('uninstalling app robertn_demo') && r.out.includes('robertn_demo 1.2.3 installed afresh') &&
         app(root).version === '1.2.3' && app(root).stale === null && !('NO_FORCED_UPDATE_NEEDED' in entry) &&
-        dataOf(root) === '{"theme":"dark"}\n' &&
+        dataOf(root) === '{"theme":"dark"}\n' && !fs.existsSync(cacheOf(root)) &&
         untarBuf(fs.readFileSync(root.preinstalled('robertn_demo', '1.2.3')))['javascript/build.json'].includes('donor_app@1.1.0.tgz'), r.out);
     check('forced update: the fresh install keeps its package and leaves no copy behind',
         fs.existsSync(root.p('var/opt/mgu-deploy/kept/robertn_demo/robertn_demo@1.2.3.tgz')) &&
@@ -5426,8 +5608,12 @@ function namedTool(id, version, edit) {
  * start limit stopped starts again with an install; iDrive 7 and 8. */
 function testServiceLimits() {
     const LIMITS = '# Written by mgu-deploy for every service a tool installs: a crash leaves no core dump for the\n' +
-        '# crash handler, which would restart the head unit, and a service that keeps failing stops.\n' +
-        '[Unit]\nStartLimitIntervalSec=600\nStartLimitBurst=20\n\n[Service]\nLimitCORE=1\n';
+        '# crash handler, which would restart the head unit, a service that keeps failing stops, and\n' +
+        '# it does not start in safe mode.\n' +
+        '[Unit]\nStartLimitIntervalSec=600\nStartLimitBurst=20\n' +
+        'ConditionPathExists=|!/var/opt/mgu-deploy/safe-mode\nConditionPathExists=|/run/mgu-deploy/safe-mode-lifted\nConditionPathExists=|!/var/opt/mgu-deploy/current/safe_mode.sh\n\n[Service]\nLimitCORE=1\n';
+    const SOCKET = '# Written by mgu-deploy for every unit a tool installs: it does not start in safe mode.\n' +
+        '[Unit]\nConditionPathExists=|!/var/opt/mgu-deploy/safe-mode\nConditionPathExists=|/run/mgu-deploy/safe-mode-lifted\nConditionPathExists=|!/var/opt/mgu-deploy/current/safe_mode.sh\n';
     const sys = (root, rel) => root.p(`etc/systemd/system/${rel}`);
     const dropIn = (root, unit) => sys(root, `${unit}.d/zz-mgu-deploy-limits.conf`);
     const limitsState = (res) => { try { return JSON.parse(res.stdout).service_limits; } catch (e) { return null; } };
@@ -5435,9 +5621,9 @@ function testServiceLimits() {
 
     const root = fakeRoot({ recmgr: ['fixture-tool'] });
     let r = root.run(['install', '--artifact', toolArtifact('0.2.0'), '--yes']);
-    check('limits: a fresh tool install gives its service the drop-in, not its socket, and reloads systemd',
+    check('limits: a fresh tool install gives its service the drop-in, its socket the safe mode condition, and reloads systemd',
         r.status === 0 && fs.readFileSync(dropIn(root, 'fixture-tool.service'), 'utf8') === LIMITS &&
-        mode(dropIn(root, 'fixture-tool.service')) === 0o644 && !fs.existsSync(sys(root, 'fixture-tool.socket.d')) &&
+        mode(dropIn(root, 'fixture-tool.service')) === 0o644 && fs.readFileSync(dropIn(root, 'fixture-tool.socket'), 'utf8') === SOCKET &&
         root.systemctlCalls().includes('daemon-reload'), r.out);
     check('limits: a stock unit gets none', !fs.existsSync(sys(root, 'stock.service.d')));
     const snap = fs.readdirSync(root.p('var/opt/mgu-deploy/backups')).filter((n) => /-install$/.test(n)).sort().pop();
@@ -5550,9 +5736,11 @@ function testServiceLimits() {
     const h0 = clean.hash();
     clean.run(['install', '--artifact', toolArtifact('0.2.0'), '--yes']);
     r = clean.run(['uninstall', 'fixture-tool', '--yes']);
+    // the deploy tool's safe mode guard stays with the deploy tool
+    const guardRel = (rel) => /mgu-deploy-safe-mode|^etc\/systemd\/system\/var-opt-ro\.service\.d/.test(rel);
     check('limits: uninstall removes the drop-in with its folder',
         r.status === 0 && !fs.existsSync(sys(clean, 'fixture-tool.service.d')) &&
-        !treeDiff(h0, clean.hash((rel) => rel.startsWith('var/opt/mgu-deploy') || rel.startsWith('var/opt/public'))).split('\n')
+        !treeDiff(h0, clean.hash((rel) => rel.startsWith('var/opt/mgu-deploy') || rel.startsWith('var/opt/public') || guardRel(rel))).split('\n')
             .some((l) => /etc\/systemd/.test(l)), r.out);
 
     // a restore to the snapshot before the install takes the drop-in out with the tool
@@ -5584,6 +5772,445 @@ function testServiceLimits() {
         check(`limits: iDrive 8${noRecmgr ? ' without recmgr\'s list' : ''}: uninstall removes it`,
             un.status === 0 && !fs.existsSync(sys(r8, 'fixture-tool.service.d')), un.out);
     });
+}
+
+/* Safe mode (deploy/README.md, "Safe mode"): safe_mode.sh's count of
+ * failed starts against made-up restart records and uptimes, on the sh the
+ * tests run under; then the deploy tool: the drop-in's condition for a
+ * tool's units and none for one that runs in safe mode, the guard laid by
+ * an install and by status, safe_mode in status --json, the boot check
+ * waiting, leaving safe mode (safe-mode off, an install that goes through,
+ * not a refused or failed one) and remove-all taking the guard out. */
+function testSafeMode() {
+    const SCRIPT = path.join(DEPLOY, 'unit', 'safe_mode.sh');
+    const G = fs.mkdtempSync(path.join(T, 'guard-'));
+    const gp = (rel) => path.join(G, rel);
+    fs.mkdirSync(gp('var/opt/mgu-deploy'), { recursive: true });
+    const now = () => Math.floor(Date.now() / 1000);
+    // sqlite3 stands in for recmgr's crash statistics: its last crash key, from a file
+    write(gp('bin/sqlite3'), `#!/bin/sh\n[ -f '${gp('crash-key')}' ] || exit 1\necho 500\ncat '${gp('crash-key')}'\n`, 0o755);
+    write(gp('var/opt/public/sin/recmgr/recmgr_stats.db'), 'stats\n');
+    const crashKey = (k) => (k === null ? fs.rmSync(gp('crash-key'), { force: true }) : write(gp('crash-key'), `${k}\n`));
+    crashKey(5);
+    const env = { PATH: `${gp('bin')}:${process.env.PATH}`, MGU_DEPLOY_VAR_OPT: gp('var/opt'), MGU_DEPLOY_BOOT_ID: gp('proc/boot_id'),
+        MGU_DEPLOY_PROC: gp('proc'), MGU_DEPLOY_PROC_STAT: gp('proc/stat') };
+    const guard = (cmd) => cp.spawnSync('sh', [SCRIPT, cmd], { encoding: 'utf8', env, timeout: 15000 });
+    // the up step while the uptime moves on: the shell commands in bg run beside it
+    const upWhile = (bg) => cp.spawnSync('sh', ['-c', `( ${bg} ) >/dev/null 2>&1 & exec sh '${SCRIPT}' up`],
+        { encoding: 'utf8', env, timeout: 30000 });
+    const setUp = (secs) => `echo '${secs}.42 77.00' > '${gp('proc/uptime')}'`;
+    const up = (s) => write(gp('proc/uptime'), `${s}.42 77.00\n`);
+    let n8 = 0;
+    // a start of the head unit: a new boot id and btime; recmgr and crashhandler delete their records
+    const start = () => {
+        n8 += 1;
+        write(gp('proc/boot_id'), `${String(n8).padStart(8, '0')}-aaaa-4bbb-8ccc-dddddddddddd\n`);
+        write(gp('proc/stat'), `cpu 0 0 0 0\nbtime ${now() - 20}\n`);
+        ['recmgr', 'crashhandler'].forEach((m) => fs.rmSync(gp(`var/opt/public/sin/${m}/restartInfo.xml`), { force: true }));
+        up(20);
+    };
+    const bootNow = () => fs.readFileSync(gp('proc/boot_id'), 'utf8').trim();
+    const record = (m, at) => {
+        const f = gp(`var/opt/public/sin/${m}/restartInfo.xml`);
+        write(f, '<restartInfo/>\n');
+        fs.utimesSync(f, at, at);
+    };
+    const flag = gp('var/opt/mgu-deploy/safe-mode');
+    const countFile = gp('var/opt/mgu-deploy/safe-mode-count');
+    // the failed starts in a row, the last mark's start included
+    const count = () => (fs.existsSync(countFile) ? fs.readFileSync(countFile, 'utf8').trim().split(' ')[2] : null);
+    // how this start ends; the next start's boot step
+    const crashAt = (s, m) => { up(s); record(m || 'recmgr', now()); guard('mark'); };
+    const endAt = (s) => { up(s); guard('mark'); };
+    const next = () => { start(); return guard('boot'); };
+
+    start();
+    let r = guard('boot');
+    check('safe mode: the boot step records recmgr\'s crash key and nothing else', r.status === 0 &&
+        fs.readFileSync(gp('var/opt/mgu-deploy/safe-mode-crashes'), 'utf8') === `${bootNow()} 5\n` &&
+        !fs.existsSync(countFile) && !fs.existsSync(flag), r.stdout + r.stderr);
+    let t0 = Date.now();
+    crashAt(60);
+    check('safe mode: the shutdown mark records a restart recmgr asked for, with the uptime, and reads the statistics at once',
+        fs.readFileSync(gp('var/opt/mgu-deploy/last-shutdown'), 'utf8') === `${bootNow()} crash 60 recmgr\n` && Date.now() - t0 < 1500,
+    `${Date.now() - t0} ms`);
+    check('safe mode: a restart after a crash within 2 minutes counts at the shutdown', count() === '1' &&
+        fs.readFileSync(countFile, 'utf8') === `0 ${bootNow()} 1\n`);
+    crashAt(70);
+    check('safe mode: the mark run again in the same start counts it once', count() === '1');
+    next();
+    crashAt(150, 'crashhandler');
+    check('safe mode: a crash restart after 2 minutes neither counts nor clears', count() === '1');
+    next();
+    crashAt(30);
+    next();
+    endAt(150);
+    check('safe mode: a switch-off or a restart the HMI or the Store asked for (a shutdown without a restart record) clears the count',
+        count() === '0');
+    next();
+    crashAt(30);
+    next();
+    endAt(25);
+    check('safe mode: such a shutdown within 2 minutes (a short drive, or a restart whose records were lost) neither counts nor clears',
+        count() === '1');
+    next();
+    endAt(40);
+    check('safe mode: nor does a second', count() === '1');
+    next();
+    // recmgr's startup deletes its restartInfo.xml, also one of the same start: its crash statistics still tell
+    crashKey(9);
+    fs.utimesSync(gp('var/opt/public/sin/recmgr/recmgr_stats.db'), now(), now());
+    endAt(12);
+    check('safe mode: a row recmgr added to its crash statistics in this start marks a crash restart, and counts',
+        fs.readFileSync(gp('var/opt/mgu-deploy/last-shutdown'), 'utf8') === `${bootNow()} crash 12 recmgr_stats\n` && count() === '2');
+    next();
+    crashKey(10);
+    fs.utimesSync(gp('var/opt/public/sin/recmgr/recmgr_stats.db'), now() - 120, now() - 120);
+    endAt(60);
+    check('safe mode: a row whose statistics were written over a minute before the shutdown is no record of it', count() === '2' &&
+        /normal 60$/.test(fs.readFileSync(gp('var/opt/mgu-deploy/last-shutdown'), 'utf8').trim()));
+    fs.utimesSync(gp('var/opt/public/sin/recmgr/recmgr_stats.db'), now(), now());
+    next();
+    endAt(60);
+    check('safe mode: statistics that did not grow in the start: no crash', count() === '2' &&
+        /normal 60$/.test(fs.readFileSync(gp('var/opt/mgu-deploy/last-shutdown'), 'utf8').trim()));
+    crashKey(null);
+    next();
+    crashKey(12);
+    fs.utimesSync(gp('var/opt/public/sin/recmgr/recmgr_stats.db'), now(), now());
+    endAt(60);
+    check('safe mode: no statistics at the boot step: no baseline, nothing taken from them', count() === '2' &&
+        /normal 60$/.test(fs.readFileSync(gp('var/opt/mgu-deploy/last-shutdown'), 'utf8').trim()));
+    next();
+    write(gp('crash-key'), 'database is locked\n');
+    endAt(60);
+    check('safe mode: statistics that do not read as a key: no crash', count() === '2');
+    crashKey(12);
+    next();
+    // a power cut: no shutdown mark for this start
+    next();
+    check('safe mode: a start with no shutdown mark (power cut) neither counts nor clears', count() === '2');
+    write(gp('var/opt/mgu-deploy/restart-requested'), `${bootNow()}\n`);
+    crashAt(20);
+    check('safe mode: a restart our tools asked for (restart-requested names the start) does not count, and clears', count() === '0');
+    next();
+    crashAt(30);
+    next();
+    crashAt(400);
+    check('safe mode: a crash restart after 5 minutes clears it', count() === '0');
+    next();
+    // four in a row: decided at the fourth's shutdown, so the next start is in safe mode
+    [['recmgr', 30], ['crashhandler', 45], ['recmgr', 90]].forEach(([m, s]) => { crashAt(s, m); next(); });
+    check('safe mode: three in a row: no safe mode', count() === '3' && !fs.existsSync(flag));
+    crashAt(15);
+    let f = null;
+    try { f = JSON.parse(fs.readFileSync(flag, 'utf8')); } catch (e) { /* checked below */ }
+    check('safe mode: the fourth in a row turns it on at its shutdown: the flag with the time and the reason, the count from zero',
+        f && /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$/.test(f.at) && /^4 failed starts in a row, each within 120 s$/.test(f.reason) &&
+        count() === '0', JSON.stringify(f));
+    crashAt(16);
+    check('safe mode: a second mark of that start keeps it as it is', count() === '0' && fs.existsSync(flag));
+    r = next();
+    check('safe mode: the next start\'s boot step says so', /safe mode: on/.test(r.stdout), r.stdout);
+    const flagBytes = fs.readFileSync(flag);
+    [1, 2, 3, 4].forEach(() => { crashAt(10); next(); });
+    check('safe mode: once on, the flag stays as it was written', fs.readFileSync(flag).equals(flagBytes));
+    fs.unlinkSync(flag);
+    next();
+    // a start up 5 minutes clears the count (the guard's second step)
+    crashAt(30);
+    next();
+    crashAt(30);
+    next();
+    up(299);
+    t0 = Date.now();
+    r = upWhile(`sleep 1; ${setUp(300)}`);
+    check('safe mode: a start that stays up 5 minutes clears the count, waiting until its uptime says so', r.status === 0 && count() === '0' &&
+        Date.now() - t0 >= 900 && /up 300 s/.test(r.stdout), r.stdout + r.stderr);
+    crashAt(30);
+    check('safe mode: and a crash at its shutdown after it starts the count at one', count() === '1');
+    next();
+
+    // starts that leave no shutdown mark: power cuts, resets that skip var-opt-ro.service, var-opt-ro.service failing before the mark
+    for (let i = 0; i < 9; i += 1) next();
+    check('safe mode: starts without a shutdown mark count nothing, however many in a row', count() === '1' && !fs.existsSync(flag));
+    crashAt(30);
+    check('safe mode: and the count goes on from the last marked start', count() === '2');
+    next();
+    endAt(150);
+    next();
+
+    // corrupt or missing files never turn safe mode on
+    write(countFile, `0 x 9\n`);
+    crashAt(30);
+    check('safe mode: a count at or above the threshold reads as no count: this start counts one', count() === '1' && !fs.existsSync(flag));
+    next();
+    write(countFile, '3\n');
+    crashAt(30);
+    check('safe mode: a count without its start reads as none', count() === '1' && !fs.existsSync(flag));
+    next();
+    write(countFile, 'garbage words here\n');
+    crashAt(30);
+    check('safe mode: a count that does not read as written reads as none', count() === '1' && !fs.existsSync(flag));
+    next();
+    fs.unlinkSync(countFile);
+    crashAt(30);
+    check('safe mode: no count file: this start counts one', count() === '1' && !fs.existsSync(flag));
+    next();
+    write(countFile, `0 x 3\n`);
+    up(30);
+    record('recmgr', now() - 3600);
+    guard('mark');
+    check('safe mode: a restart record from before this start is not this start\'s', /normal 30$/.test(fs.readFileSync(gp('var/opt/mgu-deploy/last-shutdown'), 'utf8').trim()));
+    record('recmgr', now() + 120);
+    guard('mark');
+    check('safe mode: nor one from after now', /normal 30$/.test(fs.readFileSync(gp('var/opt/mgu-deploy/last-shutdown'), 'utf8').trim()));
+    check('safe mode: so that start counts nothing', count() === '3' && !fs.existsSync(flag));
+    next();
+    fs.writeFileSync(gp('proc/uptime'), 'x\n');
+    record('recmgr', now());
+    const countBefore = fs.readFileSync(countFile, 'utf8');
+    r = guard('mark');
+    check('safe mode: no mark and no count without the uptime', r.status === 0 && fs.readFileSync(countFile, 'utf8') === countBefore);
+    fs.writeFileSync(gp('proc/boot_id'), '');
+    up(30);
+    r = guard('mark');
+    check('safe mode: no boot id: nothing written, exit 0', r.status === 0 && fs.readFileSync(countFile, 'utf8') === countBefore && !fs.existsSync(flag));
+    const bare = fs.mkdtempSync(path.join(T, 'bare-'));
+    r = cp.spawnSync('sh', [SCRIPT, 'mark'], { encoding: 'utf8', env: Object.assign({}, env, { MGU_DEPLOY_VAR_OPT: bare }) });
+    check('safe mode: without the deploy tool\'s folder it writes nothing', r.status === 0 && fs.readdirSync(bare).length === 0);
+    check('safe mode: the script leaves no temporary file', fs.readdirSync(gp('var/opt/mgu-deploy')).every((n) => !/\.tmp$|^\.crash-key/.test(n)),
+        fs.readdirSync(gp('var/opt/mgu-deploy')).join(' '));
+    // a statistics read that hangs is given up after 2 s
+    start();
+    write(gp('bin/sqlite3'), '#!/bin/sh\nexec sleep 30\n', 0o755);
+    t0 = Date.now();
+    r = guard('boot');
+    check('safe mode: a statistics read that does not answer is given up after 2 s, no baseline', r.status === 0 &&
+        Date.now() - t0 < 6000 && !fs.existsSync(gp('var/opt/mgu-deploy/safe-mode-crashes')), `${Date.now() - t0} ms`);
+    // a shutdown cut during that read: the mark so far is on disk, the count as it was
+    write(gp('var/opt/mgu-deploy/safe-mode-crashes'), `${bootNow()} 5\n`);
+    const countWas = fs.readFileSync(countFile, 'utf8');
+    up(30);
+    record('recmgr', now());
+    cp.spawnSync('sh', [SCRIPT, 'mark'], { env, timeout: 1000, killSignal: 'SIGKILL', stdio: 'ignore' });
+    check('safe mode: a shutdown cut during the statistics read leaves the start marked, with the records read before it, the count as it was',
+        fs.readFileSync(gp('var/opt/mgu-deploy/last-shutdown'), 'utf8') === `${bootNow()} crash 30 recmgr\n` &&
+        fs.readFileSync(countFile, 'utf8') === countWas, fs.readFileSync(gp('var/opt/mgu-deploy/last-shutdown'), 'utf8'));
+    fs.rmSync(gp('var/opt/public/sin/recmgr/restartInfo.xml'), { force: true });
+    up(30);
+    cp.spawnSync('sh', [SCRIPT, 'mark'], { env, timeout: 1000, killSignal: 'SIGKILL', stdio: 'ignore' });
+    check('safe mode: and without records the start is marked normal before that read, the count as it was',
+        fs.readFileSync(gp('var/opt/mgu-deploy/last-shutdown'), 'utf8') === `${bootNow()} normal 30\n` &&
+        fs.readFileSync(countFile, 'utf8') === countWas, fs.readFileSync(gp('var/opt/mgu-deploy/last-shutdown'), 'utf8'));
+
+    // ---- the deploy tool ----
+    const sys = (root, rel) => root.p(`etc/systemd/system/${rel}`);
+    const dropIn = (root, unit) => fs.readFileSync(sys(root, `${unit}.d/zz-mgu-deploy-limits.conf`), 'utf8');
+    const COND = 'ConditionPathExists=|!/var/opt/mgu-deploy/safe-mode\nConditionPathExists=|/run/mgu-deploy/safe-mode-lifted\nConditionPathExists=|!/var/opt/mgu-deploy/current/safe_mode.sh\n';
+    const out = fs.mkdtempSync(path.join(T, 'safe-'));
+    const kit = (version) => {
+        const res = hu(['artifact', fixtureCopy(version, (x) => {
+            x.units.push({ name: 'fixture-tool-boot.service', from: 'systemd/fixture-tool.service', runsInSafeMode: true });
+        }), '--out', out]);
+        if (res.status !== 0) throw new Error(res.stderr);
+        return path.join(out, `fixture-tool@${version}.tgz`);
+    };
+    const manifest = JSON.parse(untar(kit('0.2.0'))['component.json'].data);
+    check('safe mode: the kit carries runsInSafeMode for its unit only', JSON.stringify(manifest.units) === JSON.stringify([
+        { name: 'fixture-tool.socket' }, { name: 'fixture-tool.service' }, { name: 'fixture-tool-boot.service', runsInSafeMode: true }]),
+    JSON.stringify(manifest.units));
+    const root = fakeRoot({ recmgr: ['fixture-tool'] });
+    r = root.run(['install', '--artifact', kit('0.2.0'), '--yes']);
+    check('safe mode: no guard on a unit without the firmware\'s var-opt-ro.service (no start would be marked)',
+        r.status === 0 && !fs.existsSync(sys(root, 'mgu-deploy-safe-mode.service')) && !fs.existsSync(sys(root, 'var-opt-ro.service.d')), r.out);
+    write(root.p('lib/systemd/system/var-opt-ro.service'), '[Service]\nType=oneshot\nExecStart=/bin/mount -o remount,ro /var/opt\n');
+    r = root.run(['install', '--artifact', kit('0.2.0'), '--yes']);
+    const svc = dropIn(root, 'fixture-tool.service');
+    check('safe mode: a tool\'s service: its limits, off in safe mode',
+        r.status === 0 && svc.includes('StartLimitBurst=20') && svc.includes('LimitCORE=1') && svc.includes(COND), r.out + svc);
+    const sock = dropIn(root, 'fixture-tool.socket');
+    check('safe mode: its socket: off in safe mode, nothing else', sock.includes(COND) && !/\[Service\]|StartLimit/.test(sock), sock);
+    const dropIns = fs.readdirSync(sys(root, '')).filter((n) => /\.d$/.test(n) && fs.existsSync(sys(root, `${n}/zz-mgu-deploy-limits.conf`)));
+    check('safe mode: no tool unit\'s drop-in orders on the guard or wants it (nothing waits for it at boot)', dropIns.length === 3 &&
+        dropIns.every((n) => !/mgu-deploy-safe-mode|^(Wants|After|Before|Requires|BindsTo)=/m.test(dropIn(root, n.slice(0, -2)))),
+    dropIns.join(' '));
+    const guardUnit = fs.readFileSync(path.join(DEPLOY, 'unit', 'mgu-deploy-safe-mode.service'), 'utf8');
+    check('safe mode: the guard orders itself before nothing', !/^(Before|RequiredBy|WantedBy=(sockets|basic|sysinit|local-fs)\.target)/m.test(guardUnit));
+    const plainLimits = dropIn(root, 'fixture-tool-boot.service');
+    check('safe mode: a unit that runs in safe mode: the limits alone', !plainLimits.includes('safe-mode') && plainLimits.includes('LimitCORE=1'),
+        plainLimits);
+    const rec = fs.readFileSync(root.p('etc/recmgr-restartlist.conf'), 'utf8');
+    check('safe mode: the install lays the guard: its unit, enabled, the shutdown mark for var-opt-ro.service, its recmgr entry in both sections',
+        fs.readFileSync(sys(root, 'mgu-deploy-safe-mode.service'), 'utf8') === fs.readFileSync(path.join(DEPLOY, 'unit', 'mgu-deploy-safe-mode.service'), 'utf8') &&
+        fs.readlinkSync(sys(root, 'multi-user.target.wants/mgu-deploy-safe-mode.service')) === '../mgu-deploy-safe-mode.service' &&
+        fs.readFileSync(sys(root, 'var-opt-ro.service.d/40-mgu-deploy-safe-mode.conf'), 'utf8') ===
+            fs.readFileSync(path.join(DEPLOY, 'unit', 'var-opt-ro-safe-mode.conf'), 'utf8') &&
+        /\[Whitelist\][^[]*mgu-deploy-safe-mode/.test(rec) && /\[WhitelistExitSuccess\][^[]*mgu-deploy-safe-mode/.test(rec) &&
+        fs.existsSync(root.p('var/opt/mgu-deploy/current/safe_mode.sh')), r.out + rec);
+    r = root.run(['status', '--json']);
+    let st = JSON.parse(r.stdout);
+    check('safe mode: status after the install changes nothing and reports safe mode off',
+        r.status === 0 && st.safe_mode === null && st.service_limits.state === 'ok' && !r.stderr, r.out);
+    // a deploy tool update that brings the guard: status lays it
+    ['mgu-deploy-safe-mode.service', 'multi-user.target.wants/mgu-deploy-safe-mode.service', 'var-opt-ro.service.d'].forEach((rel) =>
+        fs.rmSync(sys(root, rel), { recursive: true }));
+    write(sys(root, 'fixture-tool.service.d/zz-mgu-deploy-limits.conf'), 'older\n');
+    r = root.run(['status', '--json']);
+    st = JSON.parse(r.stdout);
+    check('safe mode: status lays the guard and the drop-ins again',
+        r.status === 0 && st.service_limits.state === 'changed' && /safe mode guard mgu-deploy-safe-mode.service/.test(st.service_limits.reason) &&
+        fs.existsSync(sys(root, 'mgu-deploy-safe-mode.service')) && fs.existsSync(sys(root, 'var-opt-ro.service.d/40-mgu-deploy-safe-mode.conf')) &&
+        dropIn(root, 'fixture-tool.service') === svc, r.out);
+
+    // safe mode on
+    const FLAG = root.p('var/opt/mgu-deploy/safe-mode');
+    const on = '{"at": "2026-11-09T10:00:00Z", "reason": "4 failed starts in a row, each within 120 s"}\n';
+    write(FLAG, on);
+    st = root.status();
+    check('safe mode: status --json reports it', JSON.stringify(st.safe_mode) ===
+        JSON.stringify({ at: '2026-11-09T10:00:00Z', reason: '4 failed starts in a row, each within 120 s' }), JSON.stringify(st.safe_mode));
+    r = root.run(['status']);
+    check('safe mode: plain status says so', r.stdout.includes('safe mode: on since 2026-11-09T10:00:00Z'), r.stdout);
+    write(FLAG, 'torn');
+    check('safe mode: a flag that does not read as written is still on', JSON.stringify(root.status().safe_mode) === '{"at":null,"reason":null}');
+    write(FLAG, on);
+    // the boot check waits for a start without safe mode
+    write(root.p('var/opt/mgu-deploy/verify.json'), JSON.stringify({ 'fixture-tool': { version: '0.2.0', previous: null, boot: 'boot-0' } }));
+    r = root.run(['verify'], { MGU_DEPLOY_VERIFY_AFTER_S: '0' });
+    check('safe mode: the boot check waits, its entries kept', r.status === 0 && /safe mode is on: fixture-tool checked at a start without it/.test(r.out) &&
+        !!readJson(root.p('var/opt/mgu-deploy/verify.json'))['fixture-tool'], r.out);
+    fs.unlinkSync(root.p('var/opt/mgu-deploy/verify.json'));
+    r = root.run(['safe-mode', 'off']);
+    check('safe mode: safe-mode off needs --yes', r.status === 2 && fs.existsSync(FLAG), r.out);
+    r = root.run(['safe-mode', '--json']);
+    check('safe mode: safe-mode --json', r.status === 0 && JSON.parse(r.stdout).safe_mode.at === '2026-11-09T10:00:00Z', r.out);
+    r = root.run(['safe-mode', 'off', '--yes']);
+    st = root.status();
+    check('safe mode: safe-mode off --yes (the Store\'s button): the flag gone, the count from zero, the tools pending the next start',
+        r.status === 0 && !fs.existsSync(FLAG) && st.safe_mode === null &&
+        fs.readFileSync(root.p('var/opt/mgu-deploy/safe-mode-count'), 'utf8') === '0 boot-1 0\n' &&
+        st.pending_reboot.some((p) => p.id === 'mgu-deploy' && p.reason === 'our tools start at the next start'), r.out + JSON.stringify(st.pending_reboot));
+    r = root.run(['safe-mode', 'off', '--yes']);
+    check('safe mode: safe-mode off when it is off', r.status === 0 && /safe mode is off/.test(r.stdout), r.out);
+    // an install that goes through leaves it
+    write(FLAG, on);
+    r = root.run(['install', '--artifact', kit('0.2.1'), '--yes']);
+    check('safe mode: an install that goes through leaves it, the tools pending the next start',
+        r.status === 0 && !fs.existsSync(FLAG) && /safe mode off/.test(r.out) &&
+        root.status().pending_reboot.some((p) => p.id === 'mgu-deploy' && p.reason === 'our tools start at the next start'), r.out);
+    // the updater's own repairs (--keep-safe-mode): an install that goes through keeps it, its lift in RAM gone
+    write(FLAG, on);
+    r = root.run(['install', '--artifact', kit('0.2.1'), '--yes', '--keep-safe-mode']);
+    check('safe mode: an install with --keep-safe-mode that goes through keeps it',
+        r.status === 0 && fs.readFileSync(FLAG, 'utf8') === on && !/safe mode off/.test(r.out) &&
+        !fs.existsSync(root.p('run/mgu-deploy/safe-mode-lifted')), r.out);
+    write(FLAG, on);
+    r = root.run(['install', '--artifact', path.join(T, 'no-such.tgz'), '--yes']);
+    check('safe mode: a refused install keeps it', r.status === 2 && fs.readFileSync(FLAG, 'utf8') === on, r.out);
+    // a socket newly marked runsInSafeMode loses its drop-in at the install that marks it
+    const exempt = fs.mkdtempSync(path.join(T, 'safe-'));
+    let res = hu(['artifact', fixtureCopy('0.2.3', (x) => {
+        x.units[0].runsInSafeMode = true;
+        x.units.push({ name: 'fixture-tool-boot.service', from: 'systemd/fixture-tool.service', runsInSafeMode: true });
+    }), '--out', exempt]);
+    r = root.run(['install', '--artifact', path.join(exempt, 'fixture-tool@0.2.3.tgz'), '--yes']);
+    check('safe mode: an install that marks a socket runsInSafeMode takes its drop-in out', res.status === 0 && r.status === 0 &&
+        !fs.existsSync(sys(root, 'fixture-tool.socket.d')) && dropIn(root, 'fixture-tool.service').includes(COND), r.out);
+    r = root.run(['install', '--artifact', kit('0.2.4'), '--yes']);
+    check('safe mode: and the next version without the flag gives it back', r.status === 0 && dropIn(root, 'fixture-tool.socket').includes(COND), r.out);
+    // a failed install keeps it: its update crash-loops and goes back
+    const fr = fakeRoot({ recmgr: ['fixture-tool', 'a-tool'], active: 'fixture-tool.service' });
+    fr.run(['install', '--artifact', plainArtifact('0.2.0'), '--yes']);
+    fs.writeFileSync(fr.unitFile('fixture-tool.service.crash'), `${path.join(fr.tool('fixture-tool'), 'current')} versions/0.4.0\n`);
+    write(fr.p('var/opt/mgu-deploy/safe-mode'), on);
+    r = fr.run(['install', '--artifact', plainArtifact('0.4.0'), '--yes']);
+    check('safe mode: a failed install keeps it', r.status === 1 && fs.readFileSync(fr.p('var/opt/mgu-deploy/safe-mode'), 'utf8') === on &&
+        !fr.status().pending_reboot.some((p) => p.id === 'mgu-deploy'), r.out);
+    // nor when one artifact goes through and a later one fails
+    res = hu(['artifact', fixtureCopy('0.1.0', (x) => {
+        x.id = 'a-tool';
+        x.units = [{ name: 'a-tool.service', from: 'systemd/fixture-tool.service' }];
+        x.enable = [];
+        x.recmgr = ['a-tool'];
+        x.restart = [];
+    }), '--out', exempt]);
+    r = fr.run(['install', '--artifact', path.join(exempt, 'a-tool@0.1.0.tgz'), '--artifact', plainArtifact('0.4.0'), '--yes']);
+    check('safe mode: an install whose first artifact goes through and a later one fails keeps it', res.status === 0 && r.status === 1 &&
+        fs.existsSync(fr.tool('a-tool')) && fs.readFileSync(fr.p('var/opt/mgu-deploy/safe-mode'), 'utf8') === on &&
+        !fs.existsSync(fr.p('run/mgu-deploy/safe-mode-lifted')), r.out);
+    // an install lifts it in RAM (/run) only: the flag stays on disk until the install went through
+    const lifted = fr.p('run/mgu-deploy/safe-mode-lifted');
+    fs.writeFileSync(fr.unitFile('fixture-tool.service.crash'), '');
+    r = fr.run(['install', '--artifact', path.join(exempt, 'a-tool@0.1.0.tgz'), '--yes']);
+    check('safe mode: an install that goes through leaves it, and its lift in RAM goes',
+        r.status === 0 && !fs.existsSync(fr.p('var/opt/mgu-deploy/safe-mode')) && !fs.existsSync(lifted), r.out);
+    // a run cut short leaves it lifted in RAM; the next run of the deploy tool (or the next start) ends that
+    write(fr.p('var/opt/mgu-deploy/safe-mode'), on);
+    write(lifted, '1\n');
+    r = fr.run(['safe-mode', 'off']);
+    check('safe mode: a lift a cut-short install left goes at the next run, the flag kept', fs.readFileSync(fr.p('var/opt/mgu-deploy/safe-mode'), 'utf8') === on &&
+        !fs.existsSync(lifted), r.out);
+    // a tool to lay again that fails without failing the run keeps it
+    fs.unlinkSync(fr.p('etc/systemd/system/fixture-tool.service'));
+    fs.writeFileSync(fr.unitFile('fixture-tool.service.crash'), `${path.join(fr.tool('fixture-tool'), 'current')} versions/0.2.0\n`);
+    r = fr.run(['install', '--artifact', path.join(exempt, 'a-tool@0.1.0.tgz'), '--yes']);
+    check('safe mode: an install whose re-lay of another tool fails (warned, exit 0) keeps it', r.status === 0 &&
+        /fixture-tool 0\.2\.0 is not laid again/.test(r.out) && fs.readFileSync(fr.p('var/opt/mgu-deploy/safe-mode'), 'utf8') === on &&
+        !fs.existsSync(lifted), r.out);
+    // an older deploy tool without safe mode, installed or rolled back to: the guard and safe mode go, the drop-ins let every unit start
+    const dg = fakeRoot({ recmgr: ['fixture-tool'] });
+    write(dg.p('lib/systemd/system/var-opt-ro.service'), '[Service]\nType=oneshot\nExecStart=/bin/mount -o remount,ro /var/opt\n');
+    const selfOut = fs.mkdtempSync(path.join(T, 'safe-self-'));
+    const older = deployCopy('0.0.1');
+    const oc = readJson(path.join(older, 'component.json'));
+    oc.files = oc.files.filter((f) => !/safe_mode\.sh|safe-mode/.test(f.path));
+    fs.writeFileSync(path.join(older, 'component.json'), JSON.stringify(oc, null, 2) + '\n');
+    res = hu(['artifact', older, '--out', selfOut]);
+    hu(['artifact', DEPLOY, '--out', selfOut]);
+    dg.run(['install', '--artifact', kit('0.2.0'), '--yes']);
+    const guardPieces = ['mgu-deploy-safe-mode.service', 'multi-user.target.wants/mgu-deploy-safe-mode.service',
+        'var-opt-ro.service.d/40-mgu-deploy-safe-mode.conf'];
+    const records = ['safe-mode', 'safe-mode-count', 'safe-mode-crashes', 'last-shutdown'].map((n) => dg.p(`var/opt/mgu-deploy/${n}`));
+    const turnOn = () => {
+        write(records[0], on);
+        write(records[1], '0 boot-0 3\n');
+        write(records[2], 'boot-0 5\n');
+        write(records[3], 'boot-0 crash 30 recmgr\n');
+    };
+    // as on the unit: the installed deploy tool runs, through its shim
+    const shim = (args) => {
+        const x = cp.spawnSync('sh', [dg.p('var/opt/mgu-deploy/mgu-deploy.sh')].concat(args),
+            { encoding: 'utf8', env: Object.assign({}, dg.env, { MGU_DEPLOY_NODE: UNIT_NODE }) });
+        return { status: x.status, out: x.stdout + x.stderr };
+    };
+    turnOn();
+    r = shim(['install', '--artifact', path.join(selfOut, 'mgu-deploy@0.0.1.tgz'), '--yes']);
+    check('safe mode: an install of an older deploy tool without it takes the guard out and leaves safe mode, its count and records gone',
+        res.status === 0 && r.status === 0 && fs.readlinkSync(dg.p('var/opt/mgu-deploy/current')) === 'versions/0.0.1' &&
+        guardPieces.every((rel) => !fs.existsSync(sys(dg, rel))) && records.every((f) => !fs.existsSync(f)) &&
+        /safe mode guard mgu-deploy-safe-mode.service removed/.test(r.out) &&
+        dg.status().pending_reboot.some((p) => p.id === 'mgu-deploy' && p.reason === 'our tools start at the next start'), r.out);
+    check('safe mode: the tools\' drop-ins left let every unit start under it (no safe_mode.sh in its version)',
+        dropIn(dg, 'fixture-tool.service').includes('ConditionPathExists=|!/var/opt/mgu-deploy/current/safe_mode.sh') &&
+        !fs.existsSync(dg.p('var/opt/mgu-deploy/current/safe_mode.sh')));
+    r = shim(['install', '--artifact', path.join(selfOut, `mgu-deploy@${VERSION}.tgz`), '--yes']);
+    check('safe mode: the deploy tool with it installed again lays the guard again, safe mode off',
+        r.status === 0 && guardPieces.every((rel) => fs.existsSync(sys(dg, rel))) && !fs.existsSync(records[0]), r.out);
+    turnOn();
+    r = shim(['rollback', 'mgu-deploy', '--yes']);
+    check('safe mode: a rollback to an older deploy tool without it does the same',
+        r.status === 0 && fs.readlinkSync(dg.p('var/opt/mgu-deploy/current')) === 'versions/0.0.1' &&
+        guardPieces.every((rel) => !fs.existsSync(sys(dg, rel))) && records.every((f) => !fs.existsSync(f)), r.out);
+
+    // remove-all takes the guard out
+    fs.rmSync(FLAG, { force: true });
+    r = root.run(['remove-all', '--yes']);
+    const recAfter = fs.readFileSync(root.p('etc/recmgr-restartlist.conf'), 'utf8');
+    check('safe mode: remove-all takes the guard, its link, the shutdown mark and its recmgr entry out',
+        r.status === 0 && !fs.existsSync(sys(root, 'mgu-deploy-safe-mode.service')) &&
+        !fs.existsSync(sys(root, 'multi-user.target.wants/mgu-deploy-safe-mode.service')) && !fs.existsSync(sys(root, 'var-opt-ro.service.d')) &&
+        !recAfter.includes('mgu-deploy-safe-mode'), r.out + recAfter);
 }
 
 /* The crash handler's restart list, as iDrive 8 ships it (no newline at
@@ -5656,6 +6283,9 @@ function testCrashList() {
     write(bareList, bareStock);
     const crashState = (res) => { try { return JSON.parse(res.stdout).crash_list; } catch (e) { return null; } };
     const unchanged = () => fs.readFileSync(bareList, 'utf8') === bareStock;
+    r = bare.run(['status', '--read-only', '--json']);
+    check('crash list: status --read-only leaves a list that lacks our names, pending', r.status === 0 && unchanged() &&
+        JSON.stringify(crashState(r)) === '{"state":"pending","reason":"read-only"}', r.out);
     write(bare.p('var/opt/mgu-deploy/lock'), `1 ${fs.readFileSync(bare.p('proc/boot_id'), 'utf8').trim()}\n`);
     r = bare.run(['status', '--json']);
     check('crash list: status leaves it while another run holds the lock, and says so',
@@ -6998,7 +7628,8 @@ function testMguInstall() {
         r = mguInstall(['token'], one);
         check('mgu-install from stdin without a terminal: token is refused before connecting, saying how to run it',
             r.status === 2 && r.stderr.includes('no terminal') && !r.calls.length, r.out);
-        r = mguInstall(['first-install'], Object.assign({}, one, { env: { FAKE_GH_TOKEN: TOKEN, MGU_INSTALL_HOTSPOT: '127.0.0.1:9' } }));
+        // an address no host answers (TEST-NET-1): no head unit; a refused port is one found with SSH closed (testMguInstallClosed)
+        r = mguInstall(['first-install'], Object.assign({}, one, { env: { FAKE_GH_TOKEN: TOKEN, MGU_INSTALL_HOTSPOT: '192.0.2.1:22' } }));
         check('mgu-install: no unit answering SSH stops before any download or ssh, saying what to check',
             r.status === 1 && !r.calls.length && r.stderr.includes('no head unit answered SSH') && r.stderr.includes('--host'), r.out);
     } finally {
@@ -7508,6 +8139,161 @@ function testMguInstallUninstall() {
     }
 }
 
+/* mgu-install status: the deploy tool's status --read-only, changing
+ * nothing; with an older deploy tool its plain status, said so. */
+function testMguInstallStatus() {
+    const gh = fakeGithub({ files: [], repos: {} });
+    try {
+        const rel = fakeRelease(gh.api);
+        gh.set({ files: rel.files, repos: { [STORE_REPO]: { token: TOKEN, catalog: rel.catalogIndex } } });
+        const root = donorRoot();
+        writeCoding(root, 0x09);
+        const bin = installBin(root);
+        const opts = { bin, api: gh.api, env: { FAKE_GH_TOKEN: TOKEN } };
+        let r = mguInstall(['first-install', '--host', '10.0.0.9', '--no-uplink', '--no-renderer'], opts);
+        if (r.status !== 0) {
+            throw new Error(r.out);
+        }
+        const before = root.hash();
+        r = mguInstall(['status', '--host', '10.0.0.9'], opts);
+        check('mgu-install status: prints the deploy tool\'s status --read-only, each app\'s tile, and changes nothing',
+            r.status === 0 && /app robertn_store \S+ uid=\d+ .* tile=/.test(r.stdout) && !r.stdout.includes('no read-only status') &&
+            r.calls.some((a) => / status --read-only 2>&1$/.test(a[a.length - 1])) && root.hash().hash === before.hash, r.out);
+        check('mgu-install status: no remote command carries a double quote or a backslash',
+            r.calls.every((a) => !/["\\]/.test(a[a.length - 1])), r.calls.map((a) => a[a.length - 1]).join('\n'));
+        ['--yes', '--token', '--from', 'x'].forEach((extra) => {
+            const x = mguInstall(['status', '--host', '10.0.0.9', extra], opts);
+            check(`mgu-install status ${extra}: refused before anything reaches the unit`, x.status === 2 && !x.calls.length, x.out);
+        });
+        const shim = root.p('var/opt/mgu-deploy/mgu-deploy.sh');
+        fs.writeFileSync(shim, `[ "$1" = help ] && { echo 'mgu-deploy 0.8.9'; exit 0; }\n${fs.readFileSync(shim, 'utf8')}`);
+        r = mguInstall(['status', '--host', '10.0.0.9'], opts);
+        check('mgu-install status: with an older deploy tool, its plain status and one line that it may have repaired things',
+            r.status === 0 && r.stdout.includes('app robertn_store') && r.calls.some((a) => / status 2>&1$/.test(a[a.length - 1])) &&
+            r.stdout.endsWith('it may have repaired things, as the updater does at its start.)\n'), r.out);
+        fs.rmSync(root.p('var/opt/mgu-deploy'), { recursive: true });
+        r = mguInstall(['status', '--host', '10.0.0.9'], opts);
+        check('mgu-install status: without a deploy tool, says the Store is not installed', r.status === 1 &&
+            r.stdout === 'The Store is not installed on this head unit: it has no deploy tool.\n', r.out);
+    } finally {
+        gh.stop();
+    }
+}
+
+/* mgu-install's own command line: node with the file, or the standalone executable under test. */
+function installArgv() {
+    return process.env.MGU_TEST_INSTALL_EXE ? [process.env.MGU_TEST_INSTALL_EXE] : [process.execPath, MGU_INSTALL];
+}
+
+/* Ctrl+C (SIGINT) or SIGTERM while the head unit works: one line saying how
+ * to finish, the ssh it runs stopped, the exit the signal makes. */
+function testMguInstallStop() {
+    const bin = installBin(null);
+    fs.unlinkSync(path.join(bin.bin, 'ssh'));
+    fs.writeFileSync(path.join(bin.bin, 'ssh'), '#!/bin/sh\n[ "$1" = -V ] && { echo OpenSSH_9.6p1 >&2; exit 0; }\nexec sleep 20\n', { mode: 0o755 });
+    // the signal 1.5 s in; the run ends once the sleeping ssh has gone too, as it holds stderr open
+    const SIGNAL_AFTER = `const c = require('child_process').spawn(process.argv[1], JSON.parse(process.argv[2]), { stdio: ['ignore', 'ignore', 'pipe'] });
+let err = ''; const t0 = Date.now();
+c.stderr.on('data', (d) => { err += d; });
+setTimeout(() => c.kill(process.argv[3]), 1500);
+c.on('close', (code, signal) => process.stdout.write(JSON.stringify({ code, signal, err, ms: Date.now() - t0 })));`;
+    const argv = installArgv();
+    ['SIGINT', 'SIGTERM'].forEach((signal) => {
+        const x = cp.spawnSync(process.execPath, ['-e', SIGNAL_AFTER, argv[0], JSON.stringify(argv.slice(1).concat(['status', '--host', '10.0.0.9'])), signal],
+            { encoding: 'utf8', env: Object.assign({}, process.env, { PATH: `${bin.bin}:${process.env.PATH}` }), timeout: 30000 });
+        let r = {};
+        try {
+            r = JSON.parse(x.stdout);
+        } catch (e) {
+            r = { err: x.stderr };
+        }
+        check(`mgu-install: ${signal} while the head unit works says to run the command again, stops ssh, ends by the signal`,
+            r.signal === signal && r.err.split('\n').filter((l) => l === 'stopped; run the same command again to finish').length === 1 &&
+            r.ms < 10000, JSON.stringify(r));
+    });
+}
+
+/* A head unit found whose SSH does not answer (the hotspot's address
+ * refuses port 22): every command that connects says so, nothing run. */
+function testMguInstallClosed() {
+    const port = cp.execFileSync(process.execPath, ['-e', "const s = require('net').createServer().listen(0, '127.0.0.1', () => " +
+        '{ process.stdout.write(String(s.address().port)); s.close(); });'], { encoding: 'utf8' });
+    const opts = { bin: installBin(null), api: 'http://127.0.0.1:9', env: { MGU_INSTALL_HOTSPOT: `127.0.0.1:${port}` } };
+    [['first-install'], ['status'], ['uninstall', '--yes'], ['token', '--list']].forEach((args) => {
+        const r = mguInstall(args, opts);
+        check(`mgu-install ${args[0]}: a found head unit with SSH closed is named so, exit 1, nothing run`, r.status === 1 &&
+            r.stderr.includes(`found the head unit at 127.0.0.1:${port}, but its SSH is closed: enable root SSH first, then run this again`) &&
+            !r.stderr.includes('no head unit answered') && !r.calls.length, r.out);
+    });
+}
+
+/* usb-repo copies each listed icon beside the stick's catalog.json,
+ * checked against its iconSha256; the updater reads it from the stick. */
+function testMguInstallUsbIcons() {
+    const gh = fakeGithub({ files: [], repos: {} });
+    try {
+        const dir = fs.mkdtempSync(path.join(T, 'icons-'));
+        const png = (name) => {
+            const f = path.join(dir, name);
+            fs.writeFileSync(f, Buffer.concat([Buffer.from('89504e470d0a1a0a', 'hex'), Buffer.alloc(300, name)]));
+            return f;
+        };
+        const apps = ['good_icon', 'bad_icon', 'gone_icon', 'no_icon'].map((id) => thirdPartyArtifact(id, '1.0.0', 'npm'));
+        const good = png('good.png');
+        const bad = png('bad.png');
+        const entries = [
+            publishedEntry(gh.api, apps[0], 0, 'app', { icon: 'good_icon.png', iconSha256: sha256(fs.readFileSync(good)) }),
+            publishedEntry(gh.api, apps[1], 1, 'app', { icon: 'bad_icon.png', iconSha256: sha256(Buffer.from('another picture')) }),
+            publishedEntry(gh.api, apps[2], 2, 'app', { icon: 'gone_icon.png', iconSha256: 'a'.repeat(64) }),
+            publishedEntry(gh.api, apps[3], 3, 'app')];
+        const catalog = path.join(dir, 'catalog.json');
+        fs.writeFileSync(catalog, JSON.stringify({ schema: 2, components: entries }));
+        gh.set({ files: apps.concat([good, bad, catalog]), repos: { [STORE_REPO]: { catalog: 6,
+            catalogAssets: [{ name: 'good_icon.png', n: 4 }, { name: 'bad_icon.png', n: 5 }] } } });
+        // a dir: publish whose icon is a file in a folder of it
+        const pub = path.join(fs.mkdtempSync(path.join(T, 'pub-')), 'with-icons');
+        const dirApp = thirdPartyArtifact('dir_icon', '1.0.0', 'npm');
+        const dirPng = png('dir.png');
+        write(path.join(pub, 'icons', 'dir.png'), fs.readFileSync(dirPng));
+        fs.copyFileSync(dirApp, path.join(pub, 'dir_icon@1.0.0.tgz'));
+        const dd = fs.readFileSync(dirApp);
+        fs.writeFileSync(path.join(pub, 'catalog.json'), JSON.stringify({ schema: 2, components: [{ id: 'dir_icon', kind: 'app', version: '1.0.0',
+            icon: 'icons/dir.png', iconSha256: sha256(fs.readFileSync(dirPng)),
+            artifact: { name: 'dir_icon@1.0.0.tgz', size: dd.length, sha256: sha256(dd), url: 'dir_icon@1.0.0.tgz' } }] }));
+        const media = fs.mkdtempSync(path.join(T, 'media-'));
+        const stick = path.join(media, 'STICK');
+        fs.mkdirSync(stick);
+        const r = mguInstall(['usb-repo', stick, `github:${STORE_REPO}`, pub], { bin: installBin(null), api: gh.api });
+        const repo = path.join(stick, 'mgu-repo');
+        const listed = (name) => (readJson(path.join(repo, name, 'catalog.json')).components || []).reduce((m, c) => Object.assign(m, { [c.id]: c }), {});
+        const store = listed('mgu-store');
+        const same = (a, b) => fs.existsSync(a) && fs.readFileSync(a).equals(fs.readFileSync(b));
+        check('mgu-install usb-repo: a listed icon is copied beside catalog.json as <id>.png, its entry naming it with its sha256',
+            r.status === 0 && same(path.join(repo, 'mgu-store', 'good_icon.png'), good) && store.good_icon && store.good_icon.icon === 'good_icon.png' &&
+            store.good_icon.iconSha256 === sha256(fs.readFileSync(good)) && same(path.join(repo, 'with-icons', 'dir_icon.png'), dirPng) &&
+            listed('with-icons').dir_icon.icon === 'dir_icon.png', `${r.out}\n${JSON.stringify(store)}`);
+        check('mgu-install usb-repo: an icon that does not match its iconSha256, or is missing, is left out, said, and the stick is written',
+            r.status === 0 && !fs.existsSync(path.join(repo, 'mgu-store', 'bad_icon.png')) && !fs.existsSync(path.join(repo, 'mgu-store', 'gone_icon.png')) &&
+            ['bad_icon', 'gone_icon', 'no_icon'].every((id) => store[id] && store[id].icon === undefined && store[id].iconSha256 === undefined) &&
+            r.stdout.includes('bad_icon: icon left out (its sha256 does not match the catalog\'s)') && r.stdout.includes('gone_icon: icon left out (') &&
+            !r.stdout.includes('no_icon: icon'), r.out);
+        const x = cp.spawnSync(UNIT_NODE, [path.join(HERE, 'stick_read.js'), media], { encoding: 'utf8' });
+        let seen = {};
+        try {
+            seen = JSON.parse(x.stdout);
+        } catch (e) {
+            seen = { error: x.stderr };
+        }
+        const comps = [].concat(...Object.keys(seen).map((k) => seen[k].components || []));
+        const byId = comps.reduce((m, c) => Object.assign(m, { [c.id]: c }), {});
+        check('mgu-install usb-repo: the updater reads the copied icons from the stick, matching their sha256 (unit Node)',
+            comps.length === 5 && comps.every((c) => c.ok === true) && byId.good_icon.icon === true && byId.dir_icon.icon === true &&
+            byId.bad_icon.icon === undefined, JSON.stringify(seen));
+    } finally {
+        gh.stop();
+    }
+}
+
 /* ---- run ------------------------------------------------------------------------------------- */
 
 /* ---- head units, compatibility, iDrive 8, service packages, capabilities ---------- */
@@ -7625,6 +8411,120 @@ function testUnitDetect() {
     const r = both.run(['install', '--artifact', rhmiApp('x8', '1.0.0', ['ID8']), '--yes']);
     check('unit: unknown, the install says mguHmi is not checked', both.status().unit.hmi === null &&
         r.out.includes('which head unit this is is unknown (both MainApp folders, no HMI running): mguHmi is not checked'), r.out);
+}
+
+/* An app with iDrive 7 and iDrive 8 HMI parts, as MainApp's AppDescription reads them. */
+function hmiPartsApp(name, version) {
+    const application = { name,
+        uiDescriptions: ['ID7', 'ID8'].map((h) => ({ applicationFilePath: `./uiDescriptions/${h}/application.xml`,
+            uiDescriptionFilePath: `./uiDescriptions/${h}/uiDescription.json`, hmi: [h] })),
+        variantGroups: [{ stringsPath: './variantGroups/Common/texts', resourcesPath: './variantGroups/Common/images', hmi: ['ID7'], brands: ['BMW'] },
+            { stringsPath: './variantGroups/Eight/texts', resourcesPath: './variantGroups/Eight/images', hmi: ['ID8'], brands: ['BMW'] }] };
+    const pkg = { name, version, description: 'hmi parts test app', main: './javascript/app.js', mguLocalOnly: true };
+    const entries = [
+        { name: 'javascript/app.js', data: Buffer.from('console.log(1);\n'), mode: 0o644 },
+        { name: 'package.json', data: Buffer.from(JSON.stringify(pkg, null, 2) + '\n'), mode: 0o644 },
+        { name: 'rhmiData/application.json', data: Buffer.from(JSON.stringify({ application }, null, 2)), mode: 0o644 },
+        { name: 'rhmiData/variantGroups/Common/texts/en_US.json', data: Buffer.from('{"SID_TITLE":"Seven"}'), mode: 0o644 },
+        { name: 'rhmiData/variantGroups/Common/images/icon.png', data: Buffer.from('seven icon'), mode: 0o644 },
+        { name: 'rhmiData/variantGroups/Eight/texts/en_US.json', data: Buffer.from('{"SID_TITLE":"Eight"}'), mode: 0o644 },
+        { name: 'rhmiData/variantGroups/Eight/images/icon.png', data: Buffer.from('eight icon'), mode: 0o644 }];
+    ['ID7', 'ID8'].forEach((h) => {
+        entries.push({ name: `rhmiData/uiDescriptions/${h}/application.xml`, data: Buffer.from(`<${h}/>\n`), mode: 0o644 });
+        entries.push({ name: `rhmiData/uiDescriptions/${h}/uiDescription.json`, data: Buffer.from(`{"${h}":1}\n`), mode: 0o644 });
+    });
+    const file = path.join(fs.mkdtempSync(path.join(T, 'hmiapp-')), `${name}@${version}.tgz`);
+    fs.writeFileSync(file, tgz(entries, 1700000000));
+    return file;
+}
+
+function testHmiParts() {
+    const app = hmiPartsApp('kitapp', '1.0.0');
+    const appJson = (file) => {
+        const m = untar(file);
+        return JSON.parse((m['rhmiData/application.json'] || m['package/rhmiData/application.json']).data).application;
+    };
+    // a unit that reports ID8: MainApp gets a package whose iDrive 7 parts are listed for ID8 and its iDrive 8 ones for nothing
+    const r8 = fakeRoot();
+    r8.env.MGU_DEPLOY_HMI_VERSION = '3';
+    const i8 = r8.run(['install', '--artifact', app, '--yes']);
+    const placed = fs.existsSync(r8.preinstalled('kitapp', '1.0.0')) ? appJson(r8.preinstalled('kitapp', '1.0.0')) : null;
+    check('hmi parts: on an iDrive 7 unit reporting ID8 the package MainApp installs lists its iDrive 7 parts for ID8, its iDrive 8 ones for nothing',
+        i8.status === 0 && placed && JSON.stringify(placed.uiDescriptions.map((u) => u.hmi)) === '[["ID7","ID8"],[]]' &&
+        JSON.stringify(placed.variantGroups.map((g) => g.hmi)) === '[["ID7","ID8"],[]]' &&
+        i8.out.includes('kitapp 1.0.0: its iDrive 7 HMI parts listed for ID8'), `${i8.out}\n${JSON.stringify(placed)}`);
+    const r7 = fakeRoot();
+    r7.env.MGU_DEPLOY_HMI_VERSION = '2';
+    const i7 = r7.run(['install', '--artifact', app, '--yes']);
+    check('hmi parts: a unit reporting ID7 gets the package as it is', i7.status === 0 &&
+        sha256(fs.readFileSync(r7.preinstalled('kitapp', '1.0.0'))) === sha256(fs.readFileSync(app)), i7.out);
+
+    // installed with MainApp's iDrive 8 choice: its iDrive 8 UI, its strings and resources folders empty
+    const uid = r8.state().apps.kitapp.uid;
+    const miss = (root) => {
+        const h = root.home(uid);
+        ['strings', 'resources'].forEach((d) => fs.mkdirSync(path.join(h, 'rhmiData', d), { recursive: true }));
+        write(path.join(h, 'rhmiData/uiDescription/application.xml'), '<ID8/>\n');
+        write(path.join(h, 'rhmiData/uiDescription/uiDescription.json'), '{"ID8":1}\n');
+    };
+    miss(r8);
+    const h0 = r8.hash();
+    const ro = r8.run(['status', '--read-only', '--json']);
+    const rep = JSON.parse(ro.stdout).hmi_parts;
+    check('hmi parts: status --read-only names the app and its files, and changes nothing', ro.status === 0 && rep.length === 1 &&
+        rep[0].id === 'kitapp' && JSON.stringify(rep[0].files) === JSON.stringify(['rhmiData/uiDescription/application.xml',
+            'rhmiData/uiDescription/uiDescription.json', 'rhmiData/strings/en_US.json', 'rhmiData/resources/icon.png']) &&
+        r8.hash().hash === h0.hash, `${ro.out}\n${treeDiff(h0, r8.hash())}`);
+    const st = r8.status();
+    const f = (rel) => path.join(r8.home(uid), 'rhmiData', rel);
+    check('hmi parts: status puts the iDrive 7 files in place as MainApp merges them, modes as MainApp\'s', st.hmi_parts.length === 0 &&
+        fs.readFileSync(f('uiDescription/application.xml'), 'utf8') === '<ID7/>\n' &&
+        fs.readFileSync(f('uiDescription/uiDescription.json'), 'utf8') === '{"ID7":1}\n' &&
+        fs.readFileSync(f('strings/en_US.json'), 'utf8') === '{"SID_TITLE":"Seven"}' &&
+        fs.readFileSync(f('resources/icon.png'), 'utf8') === 'seven icon' &&
+        mode(f('strings/en_US.json')) === 0o660 && mode(f('resources/icon.png')) === 0o644 && mode(f('uiDescription/application.xml')) === 0o644,
+        JSON.stringify(st.hmi_parts));
+    check('hmi parts: the tile then waits for a restart (Restart pending)', st.pending_reboot.some((p) => p.id === 'kitapp' &&
+        p.reason === 'its tile shows from the next start (its iDrive 7 HMI files were put in place)'), JSON.stringify(st.pending_reboot));
+    const h1 = r8.hash();
+    const again = r8.run(['status', '--json']);
+    check('hmi parts: status again changes nothing', again.status === 0 && r8.hash().hash === h1.hash, treeDiff(h1, r8.hash()));
+
+    // a report not read yet: what MainApp installed stays until it is
+    miss(r8);
+    const hu = r8.hash();
+    const unread = r8.run(['status', '--json'], { MGU_DEPLOY_HMI_VERSION: '' });
+    check('hmi parts: while the reported HMI is not read status leaves the installed files', unread.status === 0 &&
+        r8.hash().hash === hu.hash, treeDiff(hu, r8.hash()));
+
+    // paths in application.json outside rhmiData are never read
+    const outside = rebuild(hmiPartsApp('outside', '1.0.0'), (entries) => tgz(entries.map((e) => (e.name !== 'rhmiData/application.json' ? e :
+        Object.assign({}, e, { data: Buffer.from(e.data.toString().split('./uiDescriptions/ID7/uiDescription.json')
+            .join('./../../../../../../../../etc/passwd')) }))), 1700000000));
+    const ri = r8.run(['install', '--artifact', outside, '--yes']);
+    const ouid = r8.state().apps.outside && r8.state().apps.outside.uid;
+    fs.mkdirSync(path.join(r8.home(ouid), 'rhmiData', 'uiDescription'), { recursive: true });
+    const so = r8.status();
+    check('hmi parts: a UI file outside the package is never copied', ri.status === 0 &&
+        !fs.existsSync(path.join(r8.home(ouid), 'rhmiData/uiDescription/passwd')) && !so.hmi_parts.some((a) => a.id === 'outside'),
+        `${ri.out}\n${JSON.stringify(so.hmi_parts)}`);
+
+    // iDrive 8 gets the package's HMI parts as they are, whatever is reported
+    const e8 = id8Root();
+    e8.env.MGU_DEPLOY_HMI_VERSION = '3';
+    const q8 = e8.run(['install', '--artifact', hmiPartsApp('kitapp', '1.0.0'), '--yes']);
+    const qf = e8.p('var/opt/mgu-deploy/id8/queue/kitapp@1.0.0.tgz');
+    const queued = fs.existsSync(qf) ? appJson(qf) : null;
+    check('hmi parts: iDrive 8 installs the package\'s HMI lists as they are', q8.status === 0 && queued &&
+        JSON.stringify(queued.uiDescriptions.map((u) => u.hmi)) === '[["ID7"],["ID8"]]' && !q8.out.includes('HMI parts listed') &&
+        e8.status().hmi_parts.length === 0, `${q8.out}\n${JSON.stringify(queued)}`);
+
+    // a unit that reports ID7 keeps what MainApp installed
+    miss(r7);
+    const h7 = r7.hash();
+    const st7 = r7.status();
+    check('hmi parts: on a unit reporting ID7 status leaves the installed files', st7.hmi_parts.length === 0 && r7.hash().hash === h7.hash,
+        treeDiff(h7, r7.hash()));
 }
 
 function testCompat() {
@@ -7777,6 +8677,18 @@ function testToolsAfterFirmware() {
     check('tools after firmware: relay lays a tool with no install step again whole, never needing setup',
         r.status === 0 && r.out.includes('laid again from the copy kept here') && fs.existsSync(sys(root, 'fixture-tool.service')) &&
         tool(root).stale === null && tool(root).needs_setup === null, r.out);
+    // in safe mode: relay --keep-safe-mode (the updater's repair) keeps it, a plain relay, an install of it, leaves it
+    const safeFlag = root.p('var/opt/mgu-deploy/safe-mode');
+    const safeOn = '{"at":"2026-11-09T10:00:00Z","reason":"test"}\n';
+    [[['relay', '--keep-safe-mode', '--yes'], true], [['relay', '--yes'], false]].forEach(([args, kept]) => {
+        reset(root, 'BMW MGU P18_23w44.2-1-3 mgu-high');
+        write(safeFlag, safeOn);
+        r = root.run(args);
+        check(`tools after firmware: in safe mode, ${args.join(' ')} lays it again whole and ${kept ? 'keeps' : 'leaves'} safe mode`,
+            r.status === 0 && r.out.includes('laid again from the copy kept here') && tool(root).stale === null &&
+            fs.existsSync(safeFlag) === kept && !fs.existsSync(root.p('run/mgu-deploy/safe-mode-lifted')), r.out);
+    });
+    if (fs.existsSync(safeFlag)) fs.unlinkSync(safeFlag);
 
     write(root.p(FW), 'BMW MGU P18_24w07 mgu-high\n');
     check('tools after firmware: with its pieces in place, another firmware still counts',
@@ -7905,18 +8817,34 @@ function testToolsAfterFirmwareSetup() {
         r.status === 0 && !hooks(root).slice(n).some((l) => /^deactivate 3\.0\.0/.test(l)) && hooks(root).slice(n).some((l) => /^activate 3\.0\.1/.test(l)) &&
         tool(root).needs_setup === null, `${r.out}\n${hooks(root).slice(n).join('\n')}`);
 
-    // a downgrade after a firmware move, then another install: the replaced 3.0.1's deactivate runs in neither
+    // a downgrade after a firmware move: the replaced 3.0.1's deactivate runs first (it may have changed the
+    // firmware's files since, through its own tool), then 3.0.0's activate; the install after it runs no deactivate
     root = setUp();
     r = root.run(['install', '--artifact', hookArtifact('3.0.1'), '--yes']);
     if (r.status !== 0) throw new Error(r.out);
     firmwareUpdate(root, 'BMW MGU P18_24w07 mgu-high');
     n = hooks(root).length;
     r = root.run(['install', '--artifact', hookArtifact('3.0.0'), '--yes']);
+    const ranDown = hooks(root).slice(n).map((l) => l.split(' ').slice(0, 2).join(' '));
+    n = hooks(root).length;
     const r2 = root.run(['install', '--artifact', hookArtifact('3.0.0'), '--yes']);
-    check('tools after firmware, with an install step: a downgrade after a firmware move, and the install after it, run no deactivate of the version replaced',
-        r.status === 0 && r2.status === 0 && !hooks(root).slice(n).some((l) => /^deactivate/.test(l)) &&
-        hooks(root).slice(n).filter((l) => /^activate 3\.0\.0/.test(l)).length === 2,
-        `${r.out}\n${r2.out}\n${hooks(root).slice(n).join('\n')}`);
+    check('tools after firmware, with an install step: a downgrade after a firmware move runs the deactivate of the version replaced, ' +
+        'all of it in place, then its own activate; the install after it runs no deactivate',
+        r.status === 0 && r2.status === 0 && JSON.stringify(ranDown) === JSON.stringify(['deactivate 3.0.1', 'activate 3.0.0']) &&
+        !hooks(root).slice(n).some((l) => /^deactivate/.test(l)) && fs.readlinkSync(root.p('var/opt/fixture-tool/current')) === 'versions/3.0.0',
+        `${r.out}\n${r2.out}\n${ranDown.join('\n')}`);
+    // the same downgrade whose deactivate fails: refused, exit 2, 3.0.1 stays current
+    root = setUp();
+    r = root.run(['install', '--artifact', hookArtifact('3.0.1'), '--yes']);
+    if (r.status !== 0) throw new Error(r.out);
+    firmwareUpdate(root, 'BMW MGU P18_24w07 mgu-high');
+    n = hooks(root).length;
+    r = root.run(['install', '--artifact', hookArtifact('3.0.0'), '--yes'], { FAKE_HOOK_FAIL: 'deactivate@3.0.1' });
+    check('tools after firmware, with an install step: a downgrade after a firmware move whose deactivate fails is refused, exit 2, ' +
+        'the version replaced stays current, no activate, needing setup',
+        r.status === 2 && r.out.includes('fixture-tool 3.0.1: deactivate exited 3') && fs.readlinkSync(root.p('var/opt/fixture-tool/current')) === 'versions/3.0.1' &&
+        JSON.stringify(hooks(root).slice(n).map((l) => l.split(' ').slice(0, 2).join(' '))) === JSON.stringify(['deactivate 3.0.1']) &&
+        /failed after a firmware update$/.test(tool(root).needs_setup), `${r.out}\n${hooks(root).slice(n).join('\n')}`);
     // the same from another source
     root = setUp();
     n = hooks(root).length;
@@ -7930,7 +8858,7 @@ function testToolsAfterFirmwareSetup() {
     r = root.run(['install', '--artifact', namedHookTool('other-hook', '1.0.0'), '--yes']);
     if (r.status !== 0) throw new Error(r.out);
     firmwareUpdate(root, 'BMW MGU P18_24w07 mgu-high');
-    // other-hook was set up under this firmware's predecessor too: put its record on this one, so its downgrade runs the deactivate
+    // other-hook's record put on this firmware, so its downgrade is not after a firmware update
     const st0 = stateOf(root);
     st0.tools['other-hook'].firmware = 'BMW MGU P18_24w07 mgu-high';
     write(root.p('var/opt/mgu-deploy/state.json'), JSON.stringify(st0));
@@ -8682,6 +9610,11 @@ function testFactoryReset() {
     const bh = broken.home(MGR);
     fs.chmodSync(bh, 0o755);
     fs.chmodSync(path.join(bh, 'data'), 0o755);
+    const before = broken.hash();
+    const ro = broken.run(['status', '--read-only'], asRoot);
+    check('factory reset: status --read-only reports and leaves the root-owned home, the manager and every file as they are',
+        ro.status === 0 && ro.stdout.includes('app stock_app') && mode(bh) === 0o755 && !broken.kills().length &&
+        broken.hash().hash === before.hash, ro.out + treeDiff(before, broken.hash()));
     const rr = broken.run(['status', '--json'], asRoot);
     check('factory reset: status gives a root-owned home back with the manager\'s modes and restarts the manager that started before',
         rr.status === 0 && mode(bh) === 0o3770 && mode(path.join(bh, 'data')) === 0o750 && broken.kills().length === 1 &&
@@ -9379,15 +10312,46 @@ function testRelist() {
     check('relist: a manager whose hook announced itself on the copy is not restarted',
         r.status === 0 && root.kills().length === k3 && fs.existsSync(root.p('etc/systemd/system/mgu-app-fallback.service')), r.out);
 
-    // our app registered but listed nowhere: the fallback would list nothing, so nothing happens
+    // our app registered (the manager put it back from preinstalled_apps) but not listed, the fallback
+    // on and run by the manager: status lists it, from the manager's next start; an install lists it
+    // and restarts the manager once
+    const custom = (root) => readJson(root.p(`var/opt/public/oap/oap_${MGR}/data/custom_apps.json`));
+    const unlist = (root) => write(root.p(`var/opt/public/oap/oap_${MGR}/data/custom_apps.json`), '{}\n');
+    root = fakeRoot({ active: PLATFORM });
+    root.run(['install', '--artifact', appArtifact('fixture_app', '1.0.0', true), '--yes']);
+    startInplace(root);
+    unlist(root);
+    st = root.status();
+    check('relist: status lists an app of ours registered without a listing, from the next start',
+        st.listing && st.listing.state === 'changed' && custom(root).fixture_app &&
+        custom(root).fixture_app['-enabled'] === 'true' && custom(root).fixture_app['-allowed'] === 'true',
+        JSON.stringify(st.listing));
+    check('relist: and the next status has nothing to do', root.status().listing.state === 'ok');
+    const k7 = root.kills().length;
+    r = again(root);
+    check('relist: an install after the status that listed it restarts the manager that has not taken it, once',
+        r.status === 0 && root.kills().length === k7 + 1 &&
+        r.out.includes('our apps are listed again: restarting the app manager so their tiles show'), r.out);
+    startInplace(root);
+    unlist(root);
+    const k4 = root.kills().length;
+    r = again(root);
+    check('relist: an install with every app current lists an unlisted app of ours and restarts the manager once',
+        r.status === 0 && custom(root).fixture_app && root.kills().length === k4 + 1 &&
+        r.out.includes('our apps are listed again: restarting the app manager so their tiles show'), r.out);
+    r = again(root);
+    check('relist: the next install leaves it', r.status === 0 && root.kills().length === k4 + 1 && !r.out.includes('listed again'), r.out);
+
+    // the same with the fallback unit gone: the fallback goes on again with the app listed
     root = fakeRoot({ active: PLATFORM });
     root.run(['install', '--artifact', appArtifact('fixture_app', '1.0.0', true), '--yes']);
     lose(root);
-    write(root.p(`var/opt/public/oap/oap_${MGR}/data/custom_apps.json`), '{}\n');
-    const k4 = root.kills().length;
+    unlist(root);
+    const k6 = root.kills().length;
     r = again(root);
-    check('relist: an app of ours registered but not in custom_apps.json brings no fallback and no restart',
-        r.status === 0 && root.kills().length === k4 && !fs.existsSync(root.p('etc/systemd/system/mgu-app-fallback.service')), r.out);
+    check('relist: an unlisted app of ours with the fallback unit gone: listed, the fallback on, one restart',
+        r.status === 0 && custom(root).fixture_app && root.kills().length === k6 + 1 &&
+        fs.existsSync(root.p('etc/systemd/system/mgu-app-fallback.service')), r.out);
 
     // app-privacy applied during a relist waits for the relist's restart, said as such
     root = fakeRoot({ active: PLATFORM, privacy: false });
@@ -9478,6 +10442,22 @@ function testMguInstallTiles() {
     }
 }
 
+/* --read-only belongs to status: any other command given it is refused
+ * before it takes the lock or changes anything. */
+function testReadOnlyOnlyStatus() {
+    const root = fakeRoot();
+    const ins = root.run(['install', '--artifact', toolArtifact('0.1.0'), '--yes']);
+    if (ins.status !== 0) throw new Error(ins.out);
+    const before = root.hash();
+    [['relay', '--read-only', '--yes'], ['install', '--artifact', toolArtifact('0.2.0'), '--read-only', '--yes'],
+        ['uninstall', 'fixture-tool', '--read-only', '--yes'], ['verify', '--read-only'], ['check', '--read-only']].forEach((a) => {
+        const r = root.run(a);
+        check(`read-only: ${a[0]} --read-only is refused (exit 2) and changes nothing`,
+            r.status === 2 && r.stderr.includes('--read-only is only for status') && root.hash().hash === before.hash,
+            r.out + treeDiff(before, root.hash()));
+    });
+}
+
 // MGU_TEST_ONLY=<name>,...: only those test functions
 const SUITES = [
     testArtifact,
@@ -9524,6 +10504,7 @@ const SUITES = [
     testPrivacyTool,
     testPrivacyOneBounce,
     testHooks,
+    testRestoreDeactivate,
     testStockFiles,
     testRollbackRemoves,
     testUninstallAfterOldRollback,
@@ -9538,7 +10519,6 @@ const SUITES = [
     testLock,
     testFallbackOffPrivacy,
     testTransactions,
-    testTodoLines,
     testToken,
     testHuToken,
     testSourcePackages,
@@ -9547,6 +10527,8 @@ const SUITES = [
     testInternet,
     testCrashList,
     testServiceLimits,
+    testSafeMode,
+    testSafeModeAfresh,
     testBootLists,
     testListSafety,
     testDurableSwitch,
@@ -9574,6 +10556,7 @@ const SUITES = [
     testRetiredAppManagementOnly,
     testUnitDetect,
     testCompat,
+    testHmiParts,
     testServices,
     testProvides,
     testDropins,
@@ -9600,7 +10583,12 @@ const SUITES = [
     testRemoveAllId8Failed,
     testRemoveAllId8Kept,
     testRemoveAllRunning,
-    testMguInstallUninstall
+    testMguInstallUninstall,
+    testMguInstallStatus,
+    testReadOnlyOnlyStatus,
+    testMguInstallStop,
+    testMguInstallClosed,
+    testMguInstallUsbIcons
 ];
 const ONLY = (process.env.MGU_TEST_ONLY || '').split(',').filter(Boolean);
 let crashed = null;

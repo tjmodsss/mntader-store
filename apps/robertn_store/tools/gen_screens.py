@@ -36,7 +36,12 @@ def restart_now(st, before, x, y, h, shift):
         'size': 34, 'color': '#3d9bff', 'hidden': True, 'shift': shift}, 'event:restartNow'))
 # store: his, filter Apps / Tools
 st = copy.deepcopy(S['store']); get(st, 'filter')['opts']['items'] = 'All,Apps,Tools'
-restart_now(st, 'filter', 936, 134, 84, {}); screens.append(st)
+restart_now(st, 'filter', 936, 134, 84, {})
+# Leave safe mode in Restart now's place (store_ui.js safeModeOff)
+i = next(k for k, c in enumerate(st['components']) if c['name'] == 'filter')
+st['components'].insert(i, comp('safeModeOff', 'vbutton', 936, 134, 540, 84, {'text': 'Leave safe mode', 'vicon': 'unlock', 'style': 'primary',
+    'size': 34, 'color': '#3d9bff', 'hidden': True}, 'event:safeModeOff'))
+screens.append(st)
 # app: his, and under the description what an installed tool says is wrong
 st = copy.deepcopy(S['app']); get(st, 'desc')['h'] = 250
 st['components'].append(text('problem', 480, 730, 1560, 90, '', 36, 'label', '#ffb020', wrap=True)); screens.append(st)
@@ -59,7 +64,7 @@ get(st, 'addRepo')['opts']['text'] = 'Add source'
 get(st, 'connLabel')['opts']['text'] = 'ACCESS'
 drop(st, 'tetherIcon', 'tetherName', 'tetherState', 'tether', 'checkNow', 'lastCheck', 'versions', 'subtitle')
 st['components'] += [
-    comp('access', 'appList', 1880, 412, 920, 360, {'items': [], 'rowH': 120}),
+    comp('access', 'appList', 1880, 412, 920, 360, {'items': [], 'rowH': 120, 'fit': True}),
     # the head unit on ACCESS's line after its longest translation, the versions above
     text('unit', 2293, 374, 507, 30, '', 22, 'bold', align='right'),
     text('versions', 1880, 341, 920, 28, '', 22, 'label', 'dim', align='right'),

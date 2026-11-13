@@ -3,6 +3,49 @@
 ## Unreleased
 
 - `mgu-install.js` tries a GitHub download again when it breaks on the way: no connection, the connection cut while the file comes ("terminated"), or GitHub busy (HTTP 5xx or 429). Three tries in all, 2 and 4 seconds apart, each said on the screen; any other answer (a 404, a file too large) ends the install as before. The error now names the file and how many bytes had come.
+## 0.8.18
+
+- `status` asks systemctl about all tools' units in one run per question and reads the process list once, so the status after each install or update takes about a second less.
+- Building a source package on the unit checks that each module compiles inside the deploy tool's own Node, as `node --check` does, without starting a Node per module: an app built on the unit installs a few seconds sooner.
+
+## 0.8.17
+
+- `install`, `relay` and an app's `rollback` take `--keep-safe-mode`: an install that goes through keeps safe mode on. The updater's own repairs use it.
+
+## 0.8.16
+
+- Safe mode: when 4 starts of the head unit in a row end in a restart that recmgr or crashhandler asked for within 2 minutes, our tools' units stay off at the next starts, BMW's start as usual. A switch-off or a normal restart (the HMI's or the Store's) after 2 minutes, a restart our tools ask for and a start that stays up 5 minutes start the count again; a start that leaves no shutdown mark (a power cut, or `var-opt-ro.service` not running the mark) counts nothing. The next install or update that goes through as a whole, or `safe-mode off --yes`, leaves it, and the tools start at the next start. A unit whose `component.json` entry says `"runsInSafeMode": true` (the updater's) runs in safe mode. `status --json` reports `safe_mode`. An install of an older deploy tool, or a rollback to one, that has no safe mode takes the guard out and leaves safe mode. deploy/README.md, "Safe mode".
+- A rollback that puts units, links or drop-ins back reloads systemd, so they take effect: a failed uninstall, restore, fallback switch or app manager takeover. The boot step that removes the deploy tool at the start after `remove-all` on iDrive 8 reloads systemd too.
+
+## 0.8.15
+
+- `restore` runs, before it puts anything back and with all of each version in place, the `deactivate` of each tool's current version the backup puts on another version, as a rollback does, and the hooks of the removal of each tool the backup shows absent, as a removal does (a restart one asks for is pending under the deploy tool). One that fails refuses the restore (exit 2, nothing restored), and the versions deactivated run their `activate` again, as they do when the restore fails after them, but for a tool it has removed by then. A tool the backup leaves on its version runs no hook.
+- An install of an older version after a firmware update runs the `deactivate` of the version it replaces, as any downgrade does: that version may have changed the new firmware's files through its own tool since. One that fails refuses the install (exit 2), and that version stays current, needing setup. An install of the same or a newer version from another source after a firmware update still records the version it replaces as deactivated without running it.
+- `mgu-install.js`: while finding the head unit, a download, or the install or removal on the head unit takes longer than 30 s, a line about every 30 s says it is still going, such as `the head unit is still installing (2 min)`. Ctrl+C (or SIGTERM) prints `stopped; run the same command again to finish` and exits as the signal would.
+- `mgu-install.js` `first-install`, `status`, `uninstall` and `token`: when the head unit was found (its hotspot address answers on port 22 without SSH, or the ENET gateway reports its address) but its SSH does not answer, they say `found the head unit at <address>, but its SSH is closed: enable root SSH first, then run this again`.
+- `mgu-install.js usb-repo` copies each app icon a catalog lists beside the stick's `catalog.json`, checked against its `iconSha256`, so the Store shows it from the stick. An icon that cannot be read or does not match is left out, said, and the stick is written all the same.
+
+## 0.8.14
+
+- `--read-only` belongs to `status` alone: any other command given it refuses (exit 2) and changes nothing.
+
+## 0.8.13
+
+- On iDrive 7, an app of ours the app manager registered without a `custom_apps.json` entry, such as one it put back from `preinstalled_apps` itself, gets its tile again: `status` run as root and every app install list it, from the app manager's next start, and an install in which every app is current (re-running the installer's `first-install`) lists it, or finds it listed since the app manager started, and restarts the app manager once.
+
+## 0.8.12
+
+- Installing or updating an app, or carrying a kept data folder into one, removes the code cache of its earlier bundle (`data/app.js.bytecode`). The head unit's Node accepts that cache for any bundle of the same length, so an update that kept the length would run the earlier version's code.
+
+## 0.8.11
+
+- On iDrive 7 units whose Telematics reports iDrive 8 (`hmiVersion` 3), apps get their tile: before the app manager installs an app, its package lists that HMI wherever it lists iDrive 7 and nowhere else, so the app manager installs the iDrive 7 UI, texts and images. Other units get packages as they are.
+- `status` puts an installed app's iDrive 7 UI, texts and images in place from its kept package when the installed ones differ, as on such units for apps installed earlier, and the tile shows from the next start (a restart is pending). `status --read-only` and `--json` list them as `hmi_parts`.
+
+## 0.8.10
+
+- `status --read-only` prints the same report and changes nothing: the repairs, list and drop-in updates and app manager restarts `status` makes as root are left undone, and their lines say `pending (read-only)` when there is something to do.
+- `mgu-install.js status` prints the deploy tool's status from the head unit, found like `first-install`, for users to paste when an app's tile does not show (`install.sh` and `install.ps1` run it the same way). It uses `status --read-only`; with a deploy tool without it, plain `status`, and one line after the report says that may have repaired things. Without a deploy tool it says the Store is not installed.
 
 ## 0.8.9
 

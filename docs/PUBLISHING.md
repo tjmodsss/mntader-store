@@ -57,6 +57,14 @@ read as a repo tree. So a repository that has both releases and
   change takes effect at the next head-unit start says so on its last stdout
   line (`{"reboot": "<why>"}`) and the Store shows the tool as
   restart-pending.
+- **Safe mode.** After repeated failed starts of the head unit, the deploy
+  tool keeps every tool's units off (deploy/README.md, "Safe mode"). A unit
+  that recovers the head unit (one that puts BMW's files back) says
+  `"runsInSafeMode": true` in its `units` entry and keeps running. A tool
+  that asks for a head-unit restart writes the start's boot id
+  (`/proc/sys/kernel/random/boot_id`) to
+  `/var/opt/mgu-deploy/restart-requested` first, so the restart never
+  counts as a failed start.
 - **Renderers** say so: `"mguProvides": "renderer"` in the tool's
   `component.json` and catalog entry. An app that requires a renderer is
   satisfied by any installed one, and renderers install side by side
@@ -139,7 +147,7 @@ stick holding `catalog.json` at its root, in `mgu-repo/` or
 | `build` | `"unit"`: the artifact is a source package, built on the head unit (an app only) |
 | `requires` | `{"<id>": "<min version>"}`: installed first |
 | `optional` | listed, never offered as an update until installed |
-| `uninstallable` | the Store offers a tool's Remove (every app but the Store has one) |
+| `uninstallable` | the Store offers a tool's Remove (every app but the Store has one; never the Store's own tools) |
 | `mguHmi` | the head units it is for |
 | `mguProvides` | a tool's capability (`renderer`); the tool kit's `component.json` names it too |
 
@@ -178,7 +186,7 @@ says why, and the rest are listed.
 140 × 140). For a source package (`"build": "unit"`), it shows the icon
 its staged tree's `rhmiData/application.json` gives its first entry
 point. Once the app is installed, the Store shows the installed package's
-own icon.
+own icon, and the source's again once it is removed.
 
 ### Channels
 

@@ -16,7 +16,8 @@ const { t: tr } = require('./i18n.js');
  * status line), pick (the GitHub repo being added: { repo, probe (the
  * updater's answer, null while it looks), tokenNote (Add token's status
  * belongs on its page) }, or null), uplinkNote (the uplink's refusal of the
- * last Wi-Fi or preferred-connection request), held (the Installed lists'
+ * last Wi-Fi or preferred-connection request), removeNote (the updater's
+ * refusal of the last Remove: { id, error, by }, on that component's page), held (the Installed lists'
  * rows to keep in this order: { apps, services } ids, and restart: whether
  * its Restart now shows; or null) }.
  *
@@ -24,7 +25,7 @@ const { t: tr } = require('./i18n.js');
  * each nav, grid and list item, on each filter cell (acts). The acts:
  * { do: 'tab', tab }, { do: 'filter', filter }, { do: 'open', page },
  * { do: 'back' }, { do: 'check' }, { do: 'install', id }, { do: 'update-all' },
- * { do: 'remove', id, tools? }, { do: 'restart' },
+ * { do: 'remove', id, tools? }, { do: 'restart' }, { do: 'safe-mode-off' },
  * { do: 'source-remove', id }, { do: 'account-remove', id }, { do: 'add-source' },
  * { do: 'add-token' }, { do: 'sign-in' }, { do: 'sign-in-cancel' }, { do: 'phone' },
  * { do: 'pick', channel }, { do: 'pick-retry' }, { do: 'pick-add-token' }, { do: 'key', key } (typeKey),
@@ -48,7 +49,7 @@ const { t: tr } = require('./i18n.js');
  */
 const { PHASE, percent, rowAction, statusLine, sourceLabel, sourceState, sourceActions, sourceChannel, sourceAccount,
     tokenLabel, tokenState, tokenSources, accountsState, loginStatus, loginCode, phoneState, phoneAddress, hmiNames,
-    notForUnit, removable, requiredAlone, undoable, setupable, pickOptions, probeStatus, sourceNames, listed, startPending } = require('./store_view.js');
+    notForUnit, removable, requiredAlone, undoable, setupable, pickOptions, probeStatus, removeRefusal, sourceNames, listed, startPending } = require('./store_view.js');
 
 const GREEN = '#35d07f';
 const BLUE = '#3d9bff';
@@ -125,6 +126,15 @@ function canRestart(m) {
 function restartNow(m, keep) {
     return m.connected && m.st && m.st.rebooting === false && (typeof keep === 'boolean' ? keep : comps(m).some((c) => c.pendingReboot))
         ? button(tr("Restart now"), { do: 'open', page: { name: 'confirm', kind: 'restart' } }, { vicon: 'refresh', style: 'primary', color: BLUE })
+        : hidden;
+}
+
+/* Leave safe mode on Store while the deploy tool's safe mode keeps our
+ * tools off and nothing installs (the widget start screen's rule); Restart
+ * now gives it its place meanwhile. */
+function safeModeOff(m) {
+    return m.connected && m.st && m.st.safeMode && !m.st.busy
+        ? button(tr("Leave safe mode"), { do: 'safe-mode-off' }, { vicon: 'unlock', style: 'primary', color: BLUE })
         : hidden;
 }
 
@@ -227,7 +237,8 @@ function storeView(m) {
         filter: { sel: Math.max(0, FILTERS.indexOf(m.filter)), acts: FILTERS.map((f) => ({ do: 'filter', filter: f })) },
         online: { items: !m.connected ? [] : checking ? [{ text: tr("Checking"), color: BLUE, dot: true }]
             : online ? [{ text: tr("Online"), color: GREEN, dot: true }] : [{ text: tr("Offline"), color: AMBER, dot: true }] },
-        restartNow: restartNow(m),
+        safeModeOff: safeModeOff(m),
+        restartNow: safeModeOff(m).hidden ? restartNow(m) : hidden,
         grid: { items: list.map((c) => tile(m, c, busy, name)), empty: m.connected ? tr("Nothing here") : '' }
     };
 }
@@ -388,6 +399,9 @@ function appView(m, page) {
         if (failed) {
             notes.push([failed, AMBER]);
         }
+    }
+    if (m.removeNote && m.removeNote.id === c.id && c.installed) {
+        notes.push([removeRefusal(m.removeNote, rawComps(m)), AMBER]);
     }
     ['note1', 'note2', 'note3'].forEach((k, i) => {
         v[k] = notes[i] ? { text: String(notes[i][0]).slice(0, 80), color: notes[i][1] } : { text: '' };

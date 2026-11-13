@@ -56,6 +56,7 @@ function compact(W, H) {
     const restartNow = (x, shift) => button('restartNow', x, M, HB_W, HB_H, 'Restart now', 'primary', 25,
         { vicon: 'refresh', color: BLUE, hidden: true, shift });
 
+    const SAFE_W = 470;
     const FILTER_W = 420;
     const ONLINE_W = 190;
     const filterX = R - ONLINE_W - 20 - FILTER_W;
@@ -63,6 +64,9 @@ function compact(W, H) {
         title('Store'),
         after('subtitle', X + 160, filterX - X - 180),
         restartNow(filterX - 16 - HB_W, { subtitle: [0, -HB_W - 16] }),
+        // Leave safe mode in Restart now's place (store_ui.js safeModeOff), wider for its longer words
+        button('safeModeOff', filterX - 16 - SAFE_W, M, SAFE_W, HB_H, 'Leave safe mode', 'primary', 25,
+            { vicon: 'unlock', color: BLUE, hidden: true, shift: { subtitle: [0, -SAFE_W - 16] } }),
         el('filter', 'tabs', filterX, M + 2, FILTER_W, 60, { items: 'All,Apps,Tools', sel: 0, style: 'joined', size: 24 }),
         el('online', 'chips', R - ONLINE_W, M + 8, ONLINE_W, 48, { items: '', align: 'right' }),
         grid()
@@ -94,7 +98,7 @@ function compact(W, H) {
         button('addRepo', X, B - SET_H, leftW, SET_H, 'Add source', 'tinted', 25, { vicon: 'plus', color: BLUE }),
         el('connPanel', 'rect', rx, HEAD + 4, rw, B - HEAD - 4, { color: 'panelTop', radius: 20 }),
         label('connLabel', rx + 18, HEAD + 18, 'ACCESS'),
-        list('access', rx + 12, HEAD + 52, rw - 24, 3 * LIST.rowH),
+        list('access', rx + 12, HEAD + 52, rw - 24, 3 * LIST.rowH, { fit: true }),
         text('unit', rx + 18, HEAD + 60 + 3 * LIST.rowH, rw - 36, 34, '', 26, 'bold'),
         text('versions', rx + 18, HEAD + 100 + 3 * LIST.rowH, rw - 36, 60, '', 22, 'label', DIM, { wrap: true }),
         button('checkNow', rx + 16, B - SET_H - 14, (rw - 44) / 2, SET_H, 'Check now', 'outline', 25, { vicon: 'refresh' }),
