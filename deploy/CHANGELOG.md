@@ -3,6 +3,10 @@
 ## Unreleased
 
 - `mgu-install.js` tries a GitHub download again when it breaks on the way: no connection, the connection cut while the file comes ("terminated"), or GitHub busy (HTTP 5xx or 429). Three tries in all, 2 and 4 seconds apart, each said on the screen; any other answer (a 404, a file too large) ends the install as before. The error now names the file and how many bytes had come.
+## 0.8.19
+
+- iDrive 7 with MainApp 6.4.8: the provisioning fallback copy carries the in-place install hook, at its start-up's `Promise.all([mainApp.init(),bookmarkController.init()])`, so an app install or update restarts only that app instead of the app manager.
+
 ## 0.8.18
 
 - `status` asks systemctl about all tools' units in one run per question and reads the process list once, so the status after each install or update takes about a second less.
