@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+The TJM Store has a new icon (the TJM logo) and is called TJM STORE.
+
 ## 0.9.40
 
 No change on screen: the renderer client it carries has multi-touch
