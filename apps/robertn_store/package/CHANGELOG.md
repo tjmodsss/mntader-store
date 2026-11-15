@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.9.41
+
 The TJM Store has a new icon (the TJM logo) and is called TJM STORE.
 
 ## 0.9.40
