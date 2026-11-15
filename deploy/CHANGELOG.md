@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- TJM: `mgu-install.js` seeds IterioDev/car-apps (its tags) as a source too, as the updater adds it.
+
 ## 0.8.19
 
 - `mgu-install.js` tries a GitHub download again when it breaks on the way: no connection, the connection cut while the file comes ("terminated"), or GitHub busy (HTTP 5xx or 429). Three tries in all, 2 and 4 seconds apart, each said on the screen; any other answer (a 404, a file too large) ends the install as before. The error now names the file and how many bytes had come.

@@ -107,7 +107,8 @@ const FROM_STDIN = __filename === '[stdin]';
 const SOURCES = { schema: 1, sources: [{ id: 'mgu-store', type: 'github', repo: STORE_REPO, builtin: true },
     { id: 'tjm-apps', type: 'github', repo: 'tjmodsss/tjm-apps', channel: 'branch' },
     { id: 'tjm-waze', type: 'github', repo: 'tjmodsss/tjm-waze', channel: 'releases' },
-    { id: 'tjm-extras', type: 'github', repo: 'tjmodsss/tjm-extras', channel: 'releases' }] };
+    { id: 'tjm-extras', type: 'github', repo: 'tjmodsss/tjm-extras', channel: 'releases' },
+    { id: 'car-apps', type: 'github', repo: 'IterioDev/car-apps', channel: 'tags' }] };
 /* the installed deploy tool */
 const DEPLOY = '/var/opt/mgu-deploy/mgu-deploy.sh';
 const UPDATER_JS = '/var/opt/mgu-updater/current/updater.js';
