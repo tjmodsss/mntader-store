@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.8.46
+
 - TJM Store: IterioDev/car-apps (its tags) is a source too, added once as a default source. Its apps and tools install unchanged, under their own names, icons and credits.
 
 ## 0.8.45
