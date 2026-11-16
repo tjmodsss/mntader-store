@@ -5,6 +5,9 @@
 ## 0.9.41
 
 The TJM Store has a new icon (the TJM logo) and is called TJM STORE.
+No change on screen: the renderer client it carries has multi-touch
+for apps that ask for it, and can hold only some parts of the
+controller.
 
 ## 0.9.40
 
