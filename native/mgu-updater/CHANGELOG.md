@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- From upstream 0.8.47: an app installed again from its kept package goes to the deploy tool with `--repair`, which installs it again once and then holds it after a failure or a second loss until it is installed from the Store.
+
 ## 0.8.47
 
 - An app installed again from its kept package goes to the deploy tool with `--repair`: the deploy tool then installs it again once, and holds it after a failure or a second loss until it is installed from the Store.

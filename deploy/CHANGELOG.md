@@ -3,6 +3,8 @@
 ## Unreleased
 
 - TJM: `mgu-install.js` seeds IterioDev/car-apps (its tags) as a source too, as the updater adds it.
+- From upstream 0.8.20 and 0.8.21: an app change never takes another app away (every other registered app is checked and given back if the app manager dropped it); an app asking for SOME/IP parts the head unit lacks is refused before anything changes; `install --repair` for lost apps; iDrive 8 installs pass over another app's empty application.json.
+
 ## 0.8.21
 
 - iDrive 7: an app whose SOME/IP manifest asks for an interface instance, method, broadcast or field the head unit does not have (or a field access it lacks a getter, setter or notifier for) is refused before anything changes, with what is missing named. The app manager would reject it partway through its install or update.
