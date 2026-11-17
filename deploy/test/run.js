@@ -7181,7 +7181,7 @@ function testUpdaterStateRestore() {
 /* ---- mgu-install ------------------------------------------------------------------------------ */
 
 const MGU_INSTALL = path.join(DEPLOY, 'mgu-install.js');
-const STORE_REPO = 'tjmodsss/tjm-store';
+const STORE_REPO = 'tjmodsss/mntader-store';
 
 function sleepSync(ms) {
     Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);

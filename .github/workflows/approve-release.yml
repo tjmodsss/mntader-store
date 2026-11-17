@@ -1,4 +1,4 @@
-# TJM Store: approves a gated component for release (release/README.md, "Gated components").
+# MNTADER Store: approves a gated component for release (release/README.md, "Gated components").
 # mgu-render and robertn_store publish a new version only when their source commit has a successful
 # release-check/<id> status. Upstream sets it after testing on a car; here this button does it.
 # Run it (Actions, Approve release) only after testing that component's current source on a car,

@@ -1,3 +1,9 @@
+# MNTADER Store
+
+MNTADER Auto Service's app store for BMW iDrive 7 head units (MGU): the **MNTADER STORE** tile on the
+car's Apps screen. It is the TJM Store (github.com/tjmodsss/tjm-store) with the MNTADER name and logo, and
+this repository as its own source; it installs and updates the same apps.
+
 # TJM Store
 
 TJM's app store for BMW iDrive 7 head units (MGU): the **TJM Store** tile on the car's Apps screen

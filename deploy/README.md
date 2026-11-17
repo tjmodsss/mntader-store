@@ -121,12 +121,12 @@ or have HU_MGU coded to the car, restart the head unit and run the install
 again.
 
 **first-install --from <folder>** installs from a folder `usb-repo` wrote
-(`<folder>/mgu-repo/tjm-store`) instead of GitHub, each file checked the
+(`<folder>/mgu-repo/mntader-store`) instead of GitHub, each file checked the
 same way. For a computer that has internet only away from the car:
 
 ```sh
 node mgu-install.js usb-repo <folder>                                                   # at home
-node mgu-install.js first-install --from <folder>/mgu-repo/tjm-store --identity <key>   # at the car
+node mgu-install.js first-install --from <folder>/mgu-repo/mntader-store --identity <key>   # at the car
 ```
 
 ### uninstall

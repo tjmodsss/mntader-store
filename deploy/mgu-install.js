@@ -53,7 +53,7 @@
  * stick is in. Inputs: github:<owner>/<repo>, an https:// catalog.json URL,
  * a folder holding catalog.json or mgu-repo.json, or package files (*.tgz,
  * *.mgu: apps, source packages, tool kits; together in mgu-repo/local/).
- * Without inputs: github:tjmodsss/tjm-store. Each app icon a
+ * Without inputs: github:tjmodsss/mntader-store. Each app icon a
  * catalog lists is copied beside its catalog.json; one that cannot be
  * read or does not match its iconSha256 is left out.
  *
@@ -88,7 +88,7 @@ const net = require('net');
 const dgram = require('dgram');
 const tty = require('tty');
 
-const STORE_REPO = 'tjmodsss/tjm-store';
+const STORE_REPO = 'tjmodsss/mntader-store';
 const GITHUB_API = process.env.MGU_INSTALL_GITHUB_API || 'https://api.github.com';
 const HOTSPOT_IP = '172.16.222.97';
 /* the hotspot address detection tries first (<host>[:<port>]; the tests point it elsewhere) */

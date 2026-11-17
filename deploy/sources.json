@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "sources": [
-    {"id": "mgu-store", "type": "github", "repo": "tjmodsss/tjm-store", "builtin": true},
+    {"id": "mgu-store", "type": "github", "repo": "tjmodsss/mntader-store", "builtin": true},
     {"id": "tjm-apps", "type": "github", "repo": "tjmodsss/tjm-apps", "channel": "branch"},
     {"id": "tjm-waze", "type": "github", "repo": "tjmodsss/tjm-waze", "channel": "releases"},
     {"id": "tjm-extras", "type": "github", "repo": "tjmodsss/tjm-extras", "channel": "releases"},

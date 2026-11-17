@@ -1200,7 +1200,7 @@ class Updater {
         return { id: SELF_SOURCE_ID, type: 'github', repo: this.conf.builtin_repo || 'robertnisipeanu/mgu-store', builtin: true };
     }
 
-    /* TJM Store: the GitHub repos it may install from (allowed_repos, <owner>/<repo> separated by
+    /* MNTADER Store: the GitHub repos it may install from (allowed_repos, <owner>/<repo> separated by
      * spaces). When set, every other source (another GitHub repo, a web address, a USB stick) is
      * left out and cannot be added. Empty: any source, as upstream. */
     allowedRepos() {
@@ -1228,7 +1228,7 @@ class Updater {
         if (!list.some((s) => s.builtin)) {
             list.unshift(this.builtin());
         }
-        // TJM Store: the built-in source is always this updater's own builtin_repo (a unit that had
+        // MNTADER Store: the built-in source is always this updater's own builtin_repo (a unit that had
         // another Store keeps its sources.json, whose built-in source named that Store's repo)
         if (this.allowedRepos().length) {
             list = list.map((s) => (s.builtin && s.repo !== this.builtin().repo ? Object.assign({}, s, { repo: this.builtin().repo }) : s));
@@ -2100,7 +2100,7 @@ class Updater {
     /* The USB media mounted now (README.md, "USB media"). Returns true when
      * the list changed; new ones are read. */
     scanUsb() {
-        // TJM Store (allowed_repos set): no USB sticks, only its own GitHub sources
+        // MNTADER Store (allowed_repos set): no USB sticks, only its own GitHub sources
         const found = this.allowedRepos().length ? [] : sourcesLib.usbSources(this.conf.mounts || '/proc/mounts', String(this.conf.usb_roots || '/media').split(/[\s,]+/).filter(Boolean))
             .map((u) => Object.assign({ id: u.id, type: 'usb', label: u.label, root: u.root }, u.loose ? { loose: true } : {}));
         const key = (l) => l.map((u) => `${u.id}\0${u.root}\0${!!u.loose}`).join('\n');
