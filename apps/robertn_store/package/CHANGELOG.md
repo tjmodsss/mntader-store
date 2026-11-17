@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.9.42
+
 Upstream merge of 2026-11-16. No change on screen: the renderer client
 it carries can hand an app only some parts of the iDrive controller
 (knob, press or tilt) while the rest stay with the car, and the Store

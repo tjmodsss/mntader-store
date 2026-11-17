@@ -2,9 +2,9 @@
 
 ## Unreleased
 
-- Comments in the configuration and source only; no change on the unit.
-
 ## 0.6.23
+
+- Comments in the configuration and source only; no change on the unit.
 
 - Text stays drawn when several apps with large fonts (Chinese, Japanese, Korean) are open or opened one after another:
   an app's glyphs are freed when it closes.
