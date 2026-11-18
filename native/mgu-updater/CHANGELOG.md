@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.8.48
+
 - MNTADER Store: its app sources are the MNTADER apps (tjmodsss/mntader-apps) and MNTADER Waze (tjmodsss/mntader-waze), with IterioDev's apps; the TJM sources are left out, also on cars that had them.
 
 ## 0.8.47
