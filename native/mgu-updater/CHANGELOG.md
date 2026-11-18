@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- MNTADER Store: its app sources are the MNTADER apps (tjmodsss/mntader-apps) and MNTADER Waze (tjmodsss/mntader-waze), with IterioDev's apps; the TJM sources are left out, also on cars that had them.
+
 ## 0.8.47
 
 - From upstream 0.8.47: an app installed again from its kept package goes to the deploy tool with `--repair`, which installs it again once and then holds it after a failure or a second loss until it is installed from the Store.

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- MNTADER Store: `mgu-install.js` and `sources.json` seed the MNTADER apps, MNTADER Waze and IterioDev sources instead of the TJM ones.
+
 ## 0.8.21
 
 - TJM: `mgu-install.js` seeds IterioDev/car-apps (its tags) as a source too, as the updater adds it.

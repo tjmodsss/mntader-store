@@ -105,9 +105,8 @@ const LAST_ENET = path.join(os.homedir(), '.cache', 'mgu-store', 'last_hu_enet_i
 const FROM_STDIN = __filename === '[stdin]';
 /* the updater's sources first-install seeds when it has none (deploy/sources.json) */
 const SOURCES = { schema: 1, sources: [{ id: 'mgu-store', type: 'github', repo: STORE_REPO, builtin: true },
-    { id: 'tjm-apps', type: 'github', repo: 'tjmodsss/tjm-apps', channel: 'branch' },
-    { id: 'tjm-waze', type: 'github', repo: 'tjmodsss/tjm-waze', channel: 'releases' },
-    { id: 'tjm-extras', type: 'github', repo: 'tjmodsss/tjm-extras', channel: 'releases' },
+    { id: 'mntader-apps', type: 'github', repo: 'tjmodsss/mntader-apps', channel: 'branch' },
+    { id: 'mntader-waze', type: 'github', repo: 'tjmodsss/mntader-waze', channel: 'releases' },
     { id: 'car-apps', type: 'github', repo: 'IterioDev/car-apps', channel: 'tags' }] };
 /* the installed deploy tool */
 const DEPLOY = '/var/opt/mgu-deploy/mgu-deploy.sh';
