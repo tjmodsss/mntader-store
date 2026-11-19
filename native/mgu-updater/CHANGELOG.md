@@ -2,10 +2,13 @@
 
 ## Unreleased
 
+- MNTADER Store: its app sources are the MNTADER apps (tjmodsss/mntader-apps) and MNTADER Waze (tjmodsss/mntader-waze), with IterioDev's apps; the MNTADER sources are left out, also on cars that had them.
+
 ## 0.8.48
 
-- MNTADER Store: its app sources are the MNTADER apps (tjmodsss/mntader-apps) and MNTADER Waze (tjmodsss/mntader-waze), with IterioDev's apps; the TJM sources are left out, also on cars that had them.
-- MNTADER Store: its app sources are the MNTADER apps (tjmodsss/mntader-apps) and MNTADER Waze (tjmodsss/mntader-waze), with IterioDev's apps; the MNTADER sources are left out, also on cars that had them.
+- MNTADER Store: upstream 0.8.48's new default source (hexlay/idrive7-system-monitor) is not taken; the MNTADER Store keeps its own sources (the MNTADER repositories and IterioDev/car-apps).
+
+- Default source: hexlay/idrive7-system-monitor (System Monitor, iDrive 7 only) on its default branch, added once at the first start of this version (and seeded by the installers, `deploy/sources.json`), unless a source of that repo is there already. On iDrive 8 its app is not offered. Like any source it can be removed; once removed it is not added again.
 
 ## 0.8.47
 

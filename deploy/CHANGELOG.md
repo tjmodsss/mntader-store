@@ -4,6 +4,16 @@
 
 - MNTADER Store: `mgu-install.js` and `sources.json` seed the MNTADER apps, MNTADER Waze and IterioDev sources instead of the MNTADER ones.
 
+## 0.8.23
+
+- Every name a tool puts on the crash handler's list goes in a second time as `<name> (deleted)`: the name a process carries once an update replaced its executable while it ran (Maps on cluster rewriting `aapd`, for example). A crash of such a process does not restart the head unit. `status` adds these names on a head unit that has the tools installed already; they count from the next start of the head unit.
+
+## 0.8.22
+
+- From upstream 0.8.22: while safe mode is on, a lost Store is still installed again once (`install --repair`) and safe mode stays on; every other lost app stays held.
+
+- While safe mode is on, a lost Store is still installed again once (`install --repair`), and safe mode stays on: the Store has the Leave safe mode button. Every other lost app stays held, and so does the Store under an updater before 0.8.47, whose repair would leave safe mode.
+
 ## 0.8.21
 
 - MNTADER: `mgu-install.js` seeds IterioDev/car-apps (its tags) as a source too, as the updater adds it.

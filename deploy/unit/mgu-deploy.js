@@ -55,7 +55,7 @@ var os = require('os');
 process.umask(0o022);
 
 /* deploy/component.json's version; the release sets both. */
-var VERSION = '0.8.21';
+var VERSION = '0.8.23';
 var HERE = __dirname;
 var MGR_UID = Number(process.env.MGU_DEPLOY_MAINAPP_UID || 12201);
 
@@ -1423,7 +1423,10 @@ function recmgrNamesOf(c) {
  * installed: its crashNames (a tool whose component.json has none: the
  * names CRASH_NAMES_BUILTIN gives its id), and every ELF file it ships
  * executable unless the firmware has that name (in [ForceRestartList], or
- * a program of its own: stockProgram). A script runs as its interpreter,
+ * a program of its own: stockProgram), each also as "<name> (deleted)":
+ * the name of a process whose executable an update replaced while it ran.
+ * The crash handler keeps a line whole (spaces inside it too) once it has
+ * cut a "#" comment and trimmed it. A script runs as its interpreter,
  * whose name is not the tool's to add. Only names this tool added
  * (CRASH_OWNED) are ever removed, and other lines and sections round-trip
  * unchanged. A unit without the
@@ -1498,7 +1501,9 @@ function crashListPlan(tools) {
     var text = fs.readFileSync(CFG.crashList, 'utf8'), want = [], owned = crashOwned();
     var sections = recmgrSections(text), force = sections.ForceRestartList || [];
     tools.forEach(function (t) {
-        crashNamesOf(t, force).forEach(function (n) { if (want.indexOf(n) < 0) want.push(n); });
+        crashNamesOf(t, force).forEach(function (n) {
+            [n, n + ' (deleted)'].forEach(function (m) { if (want.indexOf(m) < 0) want.push(m); });
+        });
     });
     var have = sections.Whitelist || [];
     var add = want.filter(function (n) { return have.indexOf(n) < 0; });
@@ -8480,10 +8485,19 @@ function toolPrevious(t) {
  * removing one), and none while the app manager has not created its data
  * folder (after a factory reset). */
 function lostApps(state) { return lostReport(state).lost; }
+var STORE_APP = 'robertn_store';
+/* Whether the installed updater repairs with install --repair
+ * --keep-safe-mode (0.8.47 and later): one before it would leave safe mode. */
+function repairKeepsSafeMode() {
+    var u = readJsonOrNull(path.join(CFG.varOpt, 'mgu-updater', 'current', 'component.json'));
+    var cmp = u && semverCmp(u.version, '0.8.47');
+    return cmp === 0 || cmp === 1;
+}
 /* { lost, held }: lost apps are installed again by the updater; held ones
  * are not, each with why: one the repair installed once already (or
  * failed), one whose rollback did not install (state.json held, until the
- * user installs it, or the app manager has it registered at a later start), and every one while safe mode is on. While the MainApp
+ * user installs it, or the app manager has it registered at a later start), and every one while safe mode is on, but
+ * the Store (where safe mode is left) under an updater whose repair keeps safe mode on. While the MainApp
  * guard is off the updater installs none (mainapp_guard).
  * An app the user removes has no record from the start of its removal. */
 function lostReport(state) {
@@ -8493,9 +8507,9 @@ function lostReport(state) {
         var v = state.apps[id] && state.apps[id].version;
         return !lstatOrNull(appEntryFile(id)) && v && fs.existsSync(keptFile(id, v)) ? { id: id, version: v, package: keptFile(id, v) } : null;
     }).filter(Boolean);
-    var safe = readSafeMode(), held = state.held || {};
+    var safe = readSafeMode(), held = state.held || {}, storeRepair = safe && repairKeepsSafeMode();
     all.forEach(function (a) {
-        var why = safe ? 'safe mode is on' : held[a.id] ? held[a.id].why : null;
+        var why = safe && !(a.id === STORE_APP && storeRepair) ? 'safe mode is on' : held[a.id] ? held[a.id].why : null;
         if (why) out.held.push(Object.assign({}, a, { why: why })); else out.lost.push(a);
     });
     return out;
