@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+The latest TJM Store changes, with the MNTADER STORE name and logo kept.
+
 ## 0.9.42
 
 Upstream merge of 2026-11-16. No change on screen: the renderer client
