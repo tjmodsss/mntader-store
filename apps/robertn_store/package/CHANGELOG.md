@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.9.43
+
 The latest TJM Store changes, with the MNTADER STORE name and logo kept.
 
 ## 0.9.42
