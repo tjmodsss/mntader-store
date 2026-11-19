@@ -5,6 +5,7 @@
 ## 0.8.48
 
 - MNTADER Store: its app sources are the MNTADER apps (tjmodsss/mntader-apps) and MNTADER Waze (tjmodsss/mntader-waze), with IterioDev's apps; the TJM sources are left out, also on cars that had them.
+- MNTADER Store: its app sources are the MNTADER apps (tjmodsss/mntader-apps) and MNTADER Waze (tjmodsss/mntader-waze), with IterioDev's apps; the MNTADER sources are left out, also on cars that had them.
 
 ## 0.8.47
 
@@ -14,7 +15,7 @@
 
 ## 0.8.46
 
-- TJM Store: IterioDev/car-apps (its tags) is a source too, added once as a default source. Its apps and tools install unchanged, under their own names, icons and credits.
+- MNTADER Store: IterioDev/car-apps (its tags) is a source too, added once as a default source. Its apps and tools install unchanged, under their own names, icons and credits.
 - An app built by its repository's script installs from a stick that holds more than the checkout: when the stick holds more than 200 MB or 20000 files, the build gets the app's folder, its shared files and the script. A folder too big to read says which folder, and whether bytes or files are over the limit.
 
 ## 0.8.45
@@ -62,8 +63,8 @@
 
 ## 0.8.35
 
-- TJM Store: `allowed_repos` (updater.conf) names the only GitHub repos the updater installs from. When set, any other source in `sources.json`, a web address or a USB stick is left out, a new one is refused, and the built-in source is always `builtin_repo`. Empty: as before.
-- TJM Store: the built-in source, the default sources and the allowed repos are the TJM repos; no GitHub sign-in app.
+- MNTADER Store: `allowed_repos` (updater.conf) names the only GitHub repos the updater installs from. When set, any other source in `sources.json`, a web address or a USB stick is left out, a new one is refused, and the built-in source is always `builtin_repo`. Empty: as before.
+- MNTADER Store: the built-in source, the default sources and the allowed repos are the MNTADER repos; no GitHub sign-in app.
 
 - Lost apps are installed again only while the app manager runs on a data folder of its own: not while it has not started or created its home after a factory reset. The updater looks again when it comes up.
 

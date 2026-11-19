@@ -11,7 +11,7 @@ works with mgu-render 0.6.23, mgu-deploy 0.8.20 and mgu-updater 0.8.46.
 
 ## 0.9.41
 
-The TJM Store has a new icon (the TJM logo) and is called TJM STORE.
+The MNTADER Store has a new icon (the MNTADER logo) and is called MNTADER STORE.
 No change on screen: the renderer client it carries has multi-touch
 for apps that ask for it, and can hold only some parts of the
 controller.
@@ -53,7 +53,7 @@ A Remove the updater refuses says why on the component's page, such as
 
 ## 0.9.33
 
-- TJM Store: the tile and the screens' title read "TJM Store" in every language, with the TJM icon.
+- MNTADER Store: the tile and the screens' title read "MNTADER Store" in every language, with the MNTADER icon.
 
 Text with ‘ ’ “ ” or a no-break space, such as an iPhone hotspot named
 Alex’s iPhone, shows them as plain quotes and a space where the font has
